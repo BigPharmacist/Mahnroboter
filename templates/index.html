@@ -1,0 +1,804 @@
+{% extends "base.html" %}
+
+{% block title %}Rechnungsübersicht{% endblock %}
+
+{% block content %}
+<div class="sticky-header">
+  <header>
+    <h1>Apotheken-Rechnungen</h1>
+    <p class="subtitle">Anzeige der zuletzt erfassten Rechnungen aus {{ limit }} Einträgen.</p>
+  </header>
+
+  <section class="controls">
+    <form method="get" class="search-form">
+      <label for="q">Suche</label>
+      <input type="text" id="q" name="q" value="{{ query }}" placeholder="Name, Rechnungsnummer oder Adresse">
+      <input type="hidden" name="grouped" value="{{ 'true' if grouped else 'false' }}">
+      <input type="hidden" name="sort" value="{{ sort_by }}">
+      <input type="hidden" name="direction" value="{{ sort_direction }}">
+      <button type="submit">Filtern</button>
+      {% if query %}
+      <a class="reset" href="{{ url_for('index', time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}">Suche zurücksetzen</a>
+      {% endif %}
+    </form>
+
+    <div class="filter-grid">
+      <!-- Zeitraum Buttons -->
+      <div class="filter-row">
+        <label class="filter-label">Zeitraum:</label>
+        <div class="filter-buttons">
+          <a href="{{ url_for('index', q=query, time='all', status=status_filter, email=email_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
+             class="filter-btn {% if time_filter == 'all' %}active{% endif %}">
+            📋 Alle Monate
+          </a>
+          <a href="{{ url_for('index', q=query, time='current_month', status=status_filter, email=email_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
+             class="filter-btn {% if time_filter == 'current_month' %}active{% endif %}">
+            {% if time_filter == 'current_month' and latest_snapshot %}
+              📅 {{ latest_snapshot.split('-')[1] }}/{{ latest_snapshot.split('-')[0] }}
+            {% else %}
+              📅 Aktueller Monat
+            {% endif %}
+          </a>
+        </div>
+
+        <!-- Custom Date Range immer sichtbar -->
+        <form method="get" class="date-range-form-inline">
+          <input type="hidden" name="q" value="{{ query }}">
+          <input type="hidden" name="time" value="custom">
+          <input type="hidden" name="status" value="{{ status_filter }}">
+          <input type="hidden" name="email" value="{{ email_filter }}">
+          <input type="hidden" name="grouped" value="{{ 'true' if grouped else 'false' }}">
+          <input type="hidden" name="sort" value="{{ sort_by }}">
+          <input type="hidden" name="direction" value="{{ sort_direction }}">
+
+          <label for="from_month" class="date-label-inline">Von:</label>
+          <input type="text" id="from_month" name="from_month_display"
+                 value="{% if from_month %}{{ from_month.split('-')[1] }}.{{ from_month.split('-')[0] }}{% elif min_month %}{{ min_month.split('-')[1] }}.{{ min_month.split('-')[0] }}{% endif %}"
+                 placeholder="MM.JJJJ"
+                 pattern="\d{2}\.\d{4}"
+                 class="month-input month-input-text">
+
+          <label for="to_month" class="date-label-inline">Bis:</label>
+          <input type="text" id="to_month" name="to_month_display"
+                 value="{% if to_month %}{{ to_month.split('-')[1] }}.{{ to_month.split('-')[0] }}{% elif max_month %}{{ max_month.split('-')[1] }}.{{ max_month.split('-')[0] }}{% endif %}"
+                 placeholder="MM.JJJJ"
+                 pattern="\d{2}\.\d{4}"
+                 class="month-input month-input-text">
+
+          <button type="submit" class="apply-btn-inline">Anwenden</button>
+        </form>
+      </div>
+
+      <!-- Status Buttons -->
+      <div class="filter-row">
+        <label class="filter-label">Status:</label>
+        <div class="filter-buttons">
+          <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status='all', email=email_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
+             class="filter-btn {% if status_filter == 'all' %}active{% endif %}">
+            📋 Alle
+          </a>
+          <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status='open', email=email_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
+             class="filter-btn {% if status_filter == 'open' %}active{% endif %}">
+            ⚠ Nur Offene
+          </a>
+          <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status='paid', email=email_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
+             class="filter-btn {% if status_filter == 'paid' %}active{% endif %}">
+            ✓ Nur Bezahlte
+          </a>
+        </div>
+      </div>
+
+      <!-- Email Filter Buttons -->
+      <div class="filter-row">
+        <label class="filter-label">Email:</label>
+        <div class="filter-buttons">
+          <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email='all', grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
+             class="filter-btn {% if email_filter == 'all' %}active{% endif %}">
+            📋 Alle
+          </a>
+          <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email='with_email', grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
+             class="filter-btn {% if email_filter == 'with_email' %}active{% endif %}">
+            ✉ Mit Email
+          </a>
+          <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email='without_email', grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
+             class="filter-btn {% if email_filter == 'without_email' %}active{% endif %}">
+            ✗ Ohne Email
+          </a>
+        </div>
+      </div>
+    </div>
+    <div class="summary">
+      <strong>{{ invoices|length }}</strong> Rechnung(en),
+      Summe <strong>{{ "%.2f"|format(total_amount) }} €</strong>
+    </div>
+    <div class="api-link">
+      <a href="{{ url_for('invoices_api', q=query, limit=limit, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, sort=sort_by, direction=sort_direction) }}">API (JSON)</a>
+    </div>
+    <div class="scan-controls">
+      <button id="scan-button" class="scan-button">&#x1F50D; Neu scannen</button>
+      <span id="scan-status" class="scan-status"></span>
+    </div>
+    <div class="action-buttons-container">
+      <div class="action-buttons-grid">
+        <button id="print-button" class="print-button action-btn">&#x1F5A8; Rechnungen drucken ({{ invoices|length }})</button>
+        <button id="email-button" class="email-button action-btn">&#x2709; Rechnungen per E-Mail versenden ({{ invoices|length }})</button>
+        <button id="collective-button" class="collective-button action-btn">&#x1F4C4; Sammelrechnungen erzeugen</button>
+        <a href="{{ url_for('index', q=query, limit=limit, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, grouped='false' if grouped else 'true', sort=sort_by, direction=sort_direction) }}" class="toggle-button action-btn">
+          {% if grouped %}
+          &#x1F4CB; Normale Ansicht
+          {% else %}
+          &#x1F465; Nach Empfänger gruppieren
+          {% endif %}
+        </a>
+      </div>
+      <div class="action-status">
+        <span id="email-status" class="email-status"></span>
+        <span id="collective-status" class="collective-status"></span>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="scrollable-content">
+  <section class="table-wrapper">
+    {% if grouped %}
+      <!-- Gruppierte Ansicht -->
+      {% for group in grouped_data %}
+      <div class="customer-group">
+        <div class="customer-header" onclick="this.parentElement.classList.toggle('collapsed')">
+          <div class="customer-info">
+            <h3>{{ group.customer_name }}</h3>
+            <p class="customer-address">{{ group.customer_address }}</p>
+          </div>
+          <div class="customer-summary">
+            <span class="invoice-count">{{ group.invoice_count }} Rechnung(en)</span>
+            <span class="group-total">{{ "%.2f"|format(group.total_amount) }} €</span>
+            <span class="toggle-icon">▼</span>
+          </div>
+        </div>
+        <div class="customer-invoices">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Datum</th>
+                <th>Rechnungsnr.</th>
+                <th>Betrag</th>
+                <th>Status</th>
+                <th>PDF</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for invoice in group.invoices %}
+              <tr class="{% if invoice.status == 'paid' %}paid-invoice{% endif %}">
+                <td class="row-number">{{ loop.index }}</td>
+                <td>{{ invoice.invoice_date|german_date }}</td>
+                <td>{{ invoice.invoice_number or "–" }}</td>
+                <td class="amount">{{ "%.2f"|format(invoice.amount_eur) }} €</td>
+                <td>
+                  {% if invoice.status == 'paid' %}
+                    <span class="status-badge paid">✓ Bezahlt ({{ invoice.last_seen_snapshot|german_month }})</span>
+                  {% else %}
+                    <span class="status-badge open">⚠ Offen</span>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if invoice.file_path %}
+                  <a href="{{ url_for('serve_pdf', relative_path=invoice.file_path) }}" target="_blank" rel="noopener">
+                    Öffnen
+                  </a>
+                  {% else %}
+                  –
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% else %}
+      <p class="empty">Keine passenden Rechnungen gefunden.</p>
+      {% endfor %}
+    {% else %}
+      <!-- Normale Ansicht -->
+      <table id="invoice-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            {% set is_date_sorted = sort_by == 'date' %}
+            {% set date_next_dir = 'desc' if is_date_sorted and sort_direction == 'asc' else 'asc' %}
+            <th class="sortable {% if is_date_sorted %}sort-{{ sort_direction }}{% endif %}">
+              <a href="{{ url_for('index', q=query, limit=limit, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, grouped='true' if grouped else 'false', sort='date', direction=date_next_dir) }}">
+                Datum <span class="sort-arrow"></span>
+              </a>
+            </th>
+            {% set is_name_sorted = sort_by == 'name' %}
+            {% set name_next_dir = 'desc' if is_name_sorted and sort_direction == 'asc' else 'asc' %}
+            <th class="sortable {% if is_name_sorted %}sort-{{ sort_direction }}{% endif %}">
+              <a href="{{ url_for('index', q=query, limit=limit, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, grouped='true' if grouped else 'false', sort='name', direction=name_next_dir) }}">
+                Empfänger <span class="sort-arrow"></span>
+              </a>
+            </th>
+            {% set is_address_sorted = sort_by == 'address' %}
+            {% set address_next_dir = 'desc' if is_address_sorted and sort_direction == 'asc' else 'asc' %}
+            <th class="sortable {% if is_address_sorted %}sort-{{ sort_direction }}{% endif %}">
+              <a href="{{ url_for('index', q=query, limit=limit, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, grouped='true' if grouped else 'false', sort='address', direction=address_next_dir) }}">
+                Adresse <span class="sort-arrow"></span>
+              </a>
+            </th>
+            {% set is_number_sorted = sort_by == 'number' %}
+            {% set number_next_dir = 'desc' if is_number_sorted and sort_direction == 'asc' else 'asc' %}
+            <th class="sortable {% if is_number_sorted %}sort-{{ sort_direction }}{% endif %}">
+              <a href="{{ url_for('index', q=query, limit=limit, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, grouped='true' if grouped else 'false', sort='number', direction=number_next_dir) }}">
+                Rechnungsnr. <span class="sort-arrow"></span>
+              </a>
+            </th>
+            {% set is_amount_sorted = sort_by == 'amount' %}
+            {% set amount_next_dir = 'desc' if is_amount_sorted and sort_direction == 'asc' else 'asc' %}
+            <th class="sortable {% if is_amount_sorted %}sort-{{ sort_direction }}{% endif %}">
+              <a href="{{ url_for('index', q=query, limit=limit, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, grouped='true' if grouped else 'false', sort='amount', direction=amount_next_dir) }}">
+                Betrag <span class="sort-arrow"></span>
+              </a>
+            </th>
+            {% set is_status_sorted = sort_by == 'status' %}
+            {% set status_next_dir = 'desc' if is_status_sorted and sort_direction == 'asc' else 'asc' %}
+            <th class="sortable {% if is_status_sorted %}sort-{{ sort_direction }}{% endif %}">
+              <a href="{{ url_for('index', q=query, limit=limit, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, grouped='true' if grouped else 'false', sort='status', direction=status_next_dir) }}">
+                Status <span class="sort-arrow"></span>
+              </a>
+            </th>
+            <th>Sammelrechnung</th>
+            <th>PDF</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for invoice in invoices %}
+          <tr class="{% if invoice.status == 'paid' %}paid-invoice{% endif %}">
+            <td class="row-number">{{ loop.index }}</td>
+            <td data-value="{{ invoice.invoice_date }}">{{ invoice.invoice_date|german_date }}</td>
+            <td data-value="{{ invoice.customer_name }}">{{ invoice.customer_name }}</td>
+            <td data-value="{{ invoice.customer_address }}">{{ invoice.customer_address }}</td>
+            <td data-value="{{ invoice.invoice_number or '' }}">{{ invoice.invoice_number or "–" }}</td>
+            <td class="amount" data-value="{{ invoice.amount_eur }}">{{ "%.2f"|format(invoice.amount_eur) }} €</td>
+            <td data-value="{{ invoice.status }}">
+              {% if invoice.status == 'paid' %}
+                <span class="status-badge paid">✓ Bezahlt ({{ invoice.last_seen_snapshot|german_month }})</span>
+              {% else %}
+                <span class="status-badge open">⚠ Offen</span>
+              {% endif %}
+            </td>
+            <td style="text-align: center;">
+              {% if invoice.in_collective_invoice %}
+                <span style="color: green; font-size: 1.2em;">✓</span>
+              {% else %}
+                –
+              {% endif %}
+            </td>
+            <td>
+              {% if invoice.file_path %}
+              <a href="{{ url_for('serve_pdf', relative_path=invoice.file_path) }}" target="_blank" rel="noopener">
+                Öffnen
+              </a>
+              {% else %}
+              –
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="9" class="empty">Keine passenden Rechnungen gefunden.</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </section>
+
+  <script>
+    // Convert MM.JJJJ to YYYY-MM before form submission
+    document.querySelector('.date-range-form-inline').addEventListener('submit', function(e) {
+      e.preventDefault();
+
+      const fromInput = document.getElementById('from_month');
+      const toInput = document.getElementById('to_month');
+
+      // Convert MM.JJJJ to YYYY-MM
+      function convertToYYYYMM(value) {
+        if (!value) return '';
+        const match = value.match(/^(\d{2})\.(\d{4})$/);
+        if (match) {
+          return match[2] + '-' + match[1]; // YYYY-MM
+        }
+        return '';
+      }
+
+      const fromMonth = convertToYYYYMM(fromInput.value);
+      const toMonth = convertToYYYYMM(toInput.value);
+
+      // Create hidden inputs with converted values
+      if (fromMonth) {
+        const hiddenFrom = document.createElement('input');
+        hiddenFrom.type = 'hidden';
+        hiddenFrom.name = 'from_month';
+        hiddenFrom.value = fromMonth;
+        this.appendChild(hiddenFrom);
+      }
+
+      if (toMonth) {
+        const hiddenTo = document.createElement('input');
+        hiddenTo.type = 'hidden';
+        hiddenTo.name = 'to_month';
+        hiddenTo.value = toMonth;
+        this.appendChild(hiddenTo);
+      }
+
+      // Submit the form
+      this.submit();
+    });
+
+    // Print button handler
+    document.getElementById('print-button').addEventListener('click', async function() {
+      const button = this;
+      const currentUrl = new URL(window.location.href);
+      const params = new URLSearchParams(currentUrl.search);
+
+      // Build API URL with current filter parameters
+      const apiUrl = new URL('/api/print-invoices', window.location.origin);
+      apiUrl.search = params.toString();
+
+      button.disabled = true;
+      button.textContent = '⏳ Erstelle PDF...';
+
+      try {
+        const response = await fetch(apiUrl);
+
+        if (!response.ok) {
+          const error = await response.json();
+          alert('Fehler beim Erstellen des PDFs: ' + (error.error || 'Unbekannter Fehler'));
+          return;
+        }
+
+        // Open PDF in new window for printing
+        const blob = await response.blob();
+        const pdfUrl = URL.createObjectURL(blob);
+
+        // Create a link and trigger download/open
+        const link = document.createElement('a');
+        link.href = pdfUrl;
+        link.target = '_blank';
+        link.download = 'rechnungen_druck.pdf';
+
+        // Try to open in new window
+        const printWindow = window.open(pdfUrl, '_blank');
+
+        if (printWindow) {
+          // Wait a bit for PDF to load, then trigger print
+          setTimeout(() => {
+            try {
+              printWindow.print();
+            } catch (e) {
+              console.error('Print failed:', e);
+            }
+          }, 1000);
+        } else {
+          // Fallback: just download the PDF
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          alert('PDF wird heruntergeladen. Bitte öffnen Sie es manuell zum Drucken.');
+        }
+      } catch (error) {
+        alert('Fehler: ' + error.message);
+      } finally {
+        button.disabled = false;
+        button.textContent = '🖨 Rechnungen drucken ({{ invoices|length }})';
+      }
+    });
+
+    // Email button handler with progress modal
+    document.getElementById('email-button').addEventListener('click', async function() {
+      const invoiceCount = {{ invoices|length }};
+      if (!confirm(`Möchten Sie wirklich ${invoiceCount} Rechnung(en) per E-Mail versenden?`)) {
+        return;
+      }
+
+      // Get modal elements
+      const modal = document.getElementById('email-progress-modal');
+      const summaryDiv = document.getElementById('email-summary');
+      const progressBar = document.getElementById('email-progress-fill');
+      const progressText = document.getElementById('email-progress-text');
+      const progressLog = document.getElementById('email-progress-log');
+      const closeBtn = document.getElementById('close-email-modal');
+
+      // Open modal
+      modal.classList.add('show');
+      closeBtn.disabled = true;
+
+      // Reset modal content
+      summaryDiv.textContent = 'Bereite E-Mail-Versand vor...';
+      progressBar.style.width = '0%';
+      progressText.textContent = '0%';
+      progressLog.innerHTML = '';
+
+      // Build API URL with current filter parameters
+      const currentUrl = new URL(window.location.href);
+      const params = new URLSearchParams(currentUrl.search);
+      const apiUrl = new URL('/api/send-invoices-email-stream', window.location.origin);
+      apiUrl.search = params.toString();
+
+      // Create EventSource for server-sent events
+      const eventSource = new EventSource(apiUrl);
+      let totalGroups = 0;
+      let totalInvoices = 0;
+
+      // Helper function to add log entry
+      function addLogEntry(type, message) {
+        const entry = document.createElement('div');
+        entry.className = `progress-log-entry ${type}`;
+
+        let icon = '●';
+        if (type === 'success') icon = '✓';
+        if (type === 'error') icon = '✗';
+        if (type === 'info') icon = '→';
+
+        entry.innerHTML = `
+          <span class="log-icon">${icon}</span>
+          <span class="log-message">${message}</span>
+        `;
+        progressLog.appendChild(entry);
+        progressLog.scrollTop = progressLog.scrollHeight;
+      }
+
+      eventSource.onmessage = function(event) {
+        const data = JSON.parse(event.data);
+
+        switch(data.type) {
+          case 'summary':
+            totalGroups = data.total_groups;
+            totalInvoices = data.total_invoices;
+            summaryDiv.textContent = `Versende ${totalInvoices} Rechnung(en) an ${totalGroups} Empfänger`;
+            addLogEntry('info', `Start: ${totalInvoices} Rechnung(en) an ${totalGroups} Empfänger`);
+            break;
+
+          case 'info':
+            addLogEntry('info', `Sende an ${data.email} (${data.count} Rechnung(en))...`);
+            break;
+
+          case 'success':
+            addLogEntry('success', `✓ Erfolgreich an ${data.email} versendet (${data.count} Rechnung(en))`);
+            break;
+
+          case 'error':
+            const errorMsg = data.customer
+              ? `✗ Fehler bei ${data.customer}: ${data.message}`
+              : `✗ Fehler: ${data.message}`;
+            addLogEntry('error', errorMsg);
+            break;
+
+          case 'progress':
+            progressBar.style.width = data.progress + '%';
+            progressText.textContent = data.progress + '%';
+            break;
+
+          case 'complete':
+            progressBar.style.width = '100%';
+            progressText.textContent = '100%';
+            const completionMsg = `Abgeschlossen: ${data.success} erfolgreich versendet${data.failed > 0 ? `, ${data.failed} fehlgeschlagen` : ''}`;
+            addLogEntry('info', completionMsg);
+            summaryDiv.textContent = completionMsg;
+            closeBtn.disabled = false;
+            eventSource.close();
+            break;
+        }
+      };
+
+      eventSource.onerror = function(error) {
+        console.error('EventSource error:', error);
+        addLogEntry('error', 'Verbindungsfehler beim E-Mail-Versand');
+        closeBtn.disabled = false;
+        eventSource.close();
+      };
+
+      // Close button handler
+      closeBtn.onclick = function() {
+        modal.classList.remove('show');
+        eventSource.close();
+        window.location.reload(); // Reload to show updated status
+      };
+    });
+
+    // Collective invoices button handler
+    document.getElementById('collective-button').addEventListener('click', async function() {
+      if (!confirm('Möchten Sie wirklich Sammelrechnungen für alle Rechnungsempfänger erzeugen?')) {
+        return;
+      }
+
+      const button = this;
+      const status = document.getElementById('collective-status');
+
+      button.disabled = true;
+      button.textContent = '⏳ Erstelle Sammelrechnungen...';
+      status.textContent = '';
+      status.className = 'collective-status';
+
+      try {
+        const currentUrl = new URL(window.location.href);
+        const params = new URLSearchParams(currentUrl.search);
+        const apiUrl = new URL('/api/generate-collective-invoices', window.location.origin);
+        apiUrl.search = params.toString();
+
+        const response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          // Show success modal with statistics
+          const modal = document.getElementById('collective-result-modal');
+          document.getElementById('collective-count').textContent = data.count;
+          document.getElementById('collective-total-invoices').textContent = data.total_invoices;
+          document.getElementById('collective-folder').textContent = data.output_folder;
+
+          // Store folder path for opening
+          const openFolderBtn = document.getElementById('open-folder-btn');
+          openFolderBtn.dataset.folderPath = data.output_folder_absolute;
+
+          modal.classList.add('show');
+
+          status.textContent = `✓ ${data.count} Sammelrechnung(en) erfolgreich erstellt`;
+          status.className = 'collective-status success';
+        } else {
+          status.textContent = '✗ Fehler: ' + (data.error || 'Unbekannter Fehler');
+          status.className = 'collective-status error';
+        }
+      } catch (error) {
+        status.textContent = '✗ Netzwerkfehler: ' + error.message;
+        status.className = 'collective-status error';
+      } finally {
+        button.disabled = false;
+        button.textContent = '📄 Sammelrechnungen erzeugen';
+      }
+    });
+
+    // Wait for DOM to be fully loaded before attaching event listeners
+    document.addEventListener('DOMContentLoaded', function() {
+      // Close collective modal handler
+      const closeBtn = document.getElementById('close-collective-modal');
+      if (closeBtn) {
+        closeBtn.addEventListener('click', function() {
+          console.log('Schließen-Button geklickt');
+          document.getElementById('collective-result-modal').classList.remove('show');
+        });
+      }
+
+      // Open folder button handler
+      const openFolderBtn = document.getElementById('open-folder-btn');
+      if (openFolderBtn) {
+        openFolderBtn.addEventListener('click', async function() {
+          console.log('Ordner öffnen-Button geklickt');
+          const folderPath = this.dataset.folderPath;
+          console.log('Ordnerpfad:', folderPath);
+
+          if (folderPath) {
+            try {
+              const response = await fetch('/api/open-folder', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ folder_path: folderPath })
+              });
+
+              const data = await response.json();
+
+              if (data.success) {
+                console.log('Ordner erfolgreich geöffnet');
+              } else {
+                console.error('Fehler beim Öffnen:', data.error);
+                alert('Fehler beim Öffnen des Ordners: ' + data.error);
+              }
+            } catch (error) {
+              console.error('Netzwerkfehler:', error);
+              alert('Netzwerkfehler: ' + error.message);
+            }
+          } else {
+            console.error('Kein Ordnerpfad vorhanden');
+            alert('Kein Ordnerpfad vorhanden');
+          }
+        });
+      }
+
+    });
+
+    document.getElementById('scan-button').addEventListener('click', function() {
+      const modal = document.getElementById('scan-progress-modal');
+      const progressBar = document.getElementById('scan-progress-fill');
+      const progressText = document.getElementById('scan-progress-text');
+      const progressLog = document.getElementById('scan-progress-log');
+      const closeBtn = document.getElementById('close-scan-modal');
+      const summaryDiv = document.getElementById('scan-summary');
+
+      // Show modal
+      modal.style.display = 'block';
+      closeBtn.disabled = true;
+      progressLog.innerHTML = '';
+      summaryDiv.innerHTML = '<p>Starte Scan...</p>';
+
+      // Create EventSource for Server-Sent Events
+      const eventSource = new EventSource('/api/scan-stream');
+
+      let totalFiles = 0;
+      let processedFiles = 0;
+      let successCount = 0;
+      let skippedCount = 0;
+      let errorCount = 0;
+      const errors = [];
+
+      eventSource.onmessage = function(event) {
+        const data = JSON.parse(event.data);
+
+        if (data.type === 'summary') {
+          totalFiles = data.total;
+          summaryDiv.innerHTML = `<p>Scanne ${totalFiles} PDF-Dateien...</p>`;
+        } else if (data.type === 'progress') {
+          processedFiles = data.processed;
+          const progress = data.progress;
+          progressBar.style.width = progress + '%';
+          progressText.textContent = `${progress}% (${processedFiles}/${totalFiles})`;
+        } else if (data.type === 'success') {
+          successCount++;
+          const logEntry = document.createElement('div');
+          logEntry.className = 'log-entry log-success';
+          logEntry.textContent = `✓ ${data.file}`;
+          progressLog.appendChild(logEntry);
+          progressLog.scrollTop = progressLog.scrollHeight;
+        } else if (data.type === 'skipped') {
+          skippedCount++;
+          const logEntry = document.createElement('div');
+          logEntry.className = 'log-entry log-info';
+          logEntry.textContent = `↷ ${data.file} (bereits vorhanden)`;
+          progressLog.appendChild(logEntry);
+          progressLog.scrollTop = progressLog.scrollHeight;
+        } else if (data.type === 'error') {
+          if (data.file) {
+            errorCount++;
+            errors.push(`${data.file}: ${data.message}`);
+            const logEntry = document.createElement('div');
+            logEntry.className = 'log-entry log-error';
+            logEntry.textContent = `✗ ${data.file}: ${data.message}`;
+            progressLog.appendChild(logEntry);
+            progressLog.scrollTop = progressLog.scrollHeight;
+          } else {
+            summaryDiv.innerHTML = `<p class="error">Fehler: ${data.message}</p>`;
+            eventSource.close();
+            closeBtn.disabled = false;
+          }
+        } else if (data.type === 'complete') {
+          eventSource.close();
+          progressBar.style.width = '100%';
+          progressText.textContent = '100%';
+
+          let summaryHTML = '<div class="scan-complete-summary">';
+          summaryHTML += `<p><strong>Scan abgeschlossen!</strong></p>`;
+          summaryHTML += `<p>✓ Neu importiert: ${data.success}</p>`;
+          summaryHTML += `<p>↷ Übersprungen: ${data.skipped}</p>`;
+
+          if (data.failed > 0) {
+            summaryHTML += `<p>✗ Fehler: ${data.failed}</p>`;
+            summaryHTML += '<details><summary>Fehlerdetails anzeigen</summary><div class="error-details">';
+            data.errors.forEach(err => {
+              summaryHTML += `<div>${err}</div>`;
+            });
+            summaryHTML += '</div></details>';
+          }
+
+          summaryHTML += '</div>';
+          summaryDiv.innerHTML = summaryHTML;
+          closeBtn.disabled = false;
+
+          // Reload page after 2 seconds if new invoices were imported
+          if (data.success > 0) {
+            setTimeout(() => window.location.reload(), 2000);
+          }
+        }
+      };
+
+      eventSource.onerror = function(error) {
+        console.error('EventSource error:', error);
+        summaryDiv.innerHTML = '<p class="error">Verbindungsfehler beim Scannen</p>';
+        eventSource.close();
+        closeBtn.disabled = false;
+      };
+
+      // Close button handler
+      closeBtn.onclick = function() {
+        eventSource.close();
+        modal.style.display = 'none';
+        if (successCount > 0) {
+          window.location.reload();
+        }
+      };
+    });
+  </script>
+
+  <!-- Scan Progress Modal -->
+  <div id="scan-progress-modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Rechnungen scannen</h2>
+      </div>
+      <div class="modal-body">
+        <div id="scan-summary" class="scan-summary"></div>
+        <div id="scan-progress-container" class="progress-container">
+          <div id="scan-progress-bar" class="progress-bar">
+            <div id="scan-progress-fill" class="progress-fill"></div>
+          </div>
+          <div id="scan-progress-text" class="progress-text">0%</div>
+        </div>
+        <div id="scan-progress-log" class="progress-log"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="close-scan-modal" class="modal-close-btn" disabled>Schließen</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Email Progress Modal -->
+  <div id="email-progress-modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>E-Mail Versand</h2>
+      </div>
+      <div class="modal-body">
+        <div id="email-summary" class="email-summary"></div>
+        <div id="email-progress-container" class="progress-container">
+          <div id="email-progress-bar" class="progress-bar">
+            <div id="email-progress-fill" class="progress-fill"></div>
+          </div>
+          <div id="email-progress-text" class="progress-text">0%</div>
+        </div>
+        <div id="email-progress-log" class="progress-log"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="close-email-modal" class="modal-close-btn" disabled>Schließen</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Collective Invoices Result Modal -->
+  <div id="collective-result-modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Sammelrechnungen erstellt</h2>
+      </div>
+      <div class="modal-body">
+        <div id="collective-summary" class="collective-summary">
+          <div class="stat-row">
+            <span class="stat-label">Anzahl Sammelrechnungen:</span>
+            <span class="stat-value" id="collective-count">-</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Enthaltene Einzelrechnungen:</span>
+            <span class="stat-value" id="collective-total-invoices">-</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Gespeichert in:</span>
+            <span class="stat-value" id="collective-folder">-</span>
+          </div>
+        </div>
+        <div id="collective-open-folder" class="folder-link-container">
+          <button id="open-folder-btn" class="open-folder-btn">📁 Ordner öffnen</button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="close-collective-modal" class="modal-close-btn">Schließen</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

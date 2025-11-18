@@ -1,0 +1,349 @@
+{% extends "base.html" %}
+
+{% block title %}LetterXpress - Briefversand{% endblock %}
+
+{% block content %}
+<!-- Version 1.2 - Fixed items data display -->
+<header>
+  <h1>LetterXpress Verwaltung</h1>
+  <p class="subtitle">Verwalten Sie Ihre Briefversendungen über die LetterXpress-API</p>
+</header>
+
+<section style="display: flex; gap: 1rem; margin-bottom: 2rem;">
+  <div class="info-card" id="balance-info" style="max-width: 220px; flex: 0 0 auto;">
+    <span class="info-icon">💰</span>
+    <div class="info-content">
+      <span class="info-label">Kontostand</span>
+      <span class="info-value" id="lx-balance">Lädt...</span>
+    </div>
+  </div>
+</section>
+
+<section class="dashboard-sections">
+  <div class="section-card" style="margin-bottom: 2rem;">
+    <h3 style="margin-bottom: 0.75rem; font-size: 1.1rem;">Preisrechner</h3>
+    <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; margin-bottom: 0.75rem;">
+      <div style="min-width: 80px;">
+        <label for="pages" style="font-size: 0.85rem; display: block; margin-bottom: 0.25rem;">Seiten:</label>
+        <input type="number" id="pages" min="1" value="2" style="width: 80px; padding: 0.4rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem;">
+      </div>
+      <div style="min-width: 130px;">
+        <label for="color" style="font-size: 0.85rem; display: block; margin-bottom: 0.25rem;">Farbe:</label>
+        <select id="color" style="width: 130px; padding: 0.4rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem;">
+          <option value="1">Schwarz/Weiß</option>
+          <option value="4" selected>Farbig</option>
+        </select>
+      </div>
+      <div style="min-width: 120px;">
+        <label for="mode" style="font-size: 0.85rem; display: block; margin-bottom: 0.25rem;">Druck:</label>
+        <select id="mode" style="width: 120px; padding: 0.4rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem;">
+          <option value="simplex">Einseitig</option>
+          <option value="duplex" selected>Beidseitig</option>
+        </select>
+      </div>
+      <div style="min-width: 130px;">
+        <label for="shipping" style="font-size: 0.85rem; display: block; margin-bottom: 0.25rem;">Versand:</label>
+        <select id="shipping" style="width: 130px; padding: 0.4rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem;">
+          <option value="national" selected>National</option>
+          <option value="international">International</option>
+        </select>
+      </div>
+      <div style="min-width: 130px;">
+        <label for="registered" style="font-size: 0.85rem; display: block; margin-bottom: 0.25rem;">Einschreiben:</label>
+        <select id="registered" style="width: 130px; padding: 0.4rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem;">
+          <option value="">Nein</option>
+          <option value="r1">Einwurf</option>
+          <option value="r2">Einschreiben</option>
+        </select>
+      </div>
+      <button onclick="calculatePrice()" style="padding: 0.4rem 1rem; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9rem; height: 34px;">
+        Preis berechnen
+      </button>
+    </div>
+    <div id="price-result" style="margin-top: 0.5rem; padding: 0.75rem; background: #f8f9fa; border-radius: 4px; display: none; font-size: 0.95rem;">
+      <strong>Preis:</strong> <span id="calculated-price"></span>
+    </div>
+  </div>
+
+  <div class="section-card">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+      <h3>Druckaufträge</h3>
+      <div>
+        <label for="job-filter">Filter:</label>
+        <select id="job-filter" onchange="loadJobs()" style="padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px; margin-left: 0.5rem;">
+          <option value="">Alle</option>
+          <option value="queue">Warteschlange</option>
+          <option value="hold">Angehalten</option>
+          <option value="done">Fertig</option>
+          <option value="canceled">Abgebrochen</option>
+          <option value="draft">Entwurf</option>
+        </select>
+        <button onclick="loadJobs()" style="padding: 0.5rem 1rem; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; margin-left: 0.5rem;">
+          Aktualisieren
+        </button>
+      </div>
+    </div>
+    <div id="jobs-loading" style="text-align: center; padding: 2rem;">
+      <p>Lade Druckaufträge...</p>
+    </div>
+    <div id="jobs-container" style="display: none;">
+      <table class="top-customers-table">
+        <thead>
+          <tr>
+            <th>Job ID</th>
+            <th>Dateiname</th>
+            <th>Status</th>
+            <th>Seiten</th>
+            <th>Preis</th>
+            <th>Datum</th>
+            <th>Aktionen</th>
+          </tr>
+        </thead>
+        <tbody id="jobs-list">
+        </tbody>
+      </table>
+    </div>
+    <div id="jobs-error" style="display: none; padding: 1rem; background: #f8d7da; color: #721c24; border-radius: 4px;">
+    </div>
+  </div>
+</section>
+
+<div id="job-detail-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; overflow-y: auto;">
+  <div style="background: white; margin: 1.5rem auto; max-width: 650px; border-radius: 8px; padding: 1.25rem; position: relative;">
+    <button onclick="closeJobDetail()" style="position: absolute; top: 0.75rem; right: 0.75rem; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #666;">×</button>
+    <h2 style="margin-top: 0; margin-bottom: 1rem; font-size: 1.25rem;">Job Details</h2>
+    <div id="job-detail-content"></div>
+  </div>
+</div>
+
+<script>
+// Load initial data
+async function loadInitialData() {
+  try {
+    // Load balance
+    const balanceResponse = await fetch('/api/letterxpress/balance');
+    const balanceData = await balanceResponse.json();
+
+    if (balanceData.success) {
+      document.getElementById('lx-balance').textContent =
+        `${balanceData.balance.toFixed(2)} ${balanceData.currency}`;
+    } else {
+      document.getElementById('lx-balance').textContent = 'Fehler';
+      document.getElementById('lx-balance').style.color = '#dc3545';
+    }
+  } catch (error) {
+    console.error('Error loading initial data:', error);
+    document.getElementById('lx-balance').textContent = 'Fehler';
+  }
+}
+
+// Calculate price
+async function calculatePrice() {
+  const pages = parseInt(document.getElementById('pages').value);
+  const color = document.getElementById('color').value;
+  const mode = document.getElementById('mode').value;
+  const shipping = document.getElementById('shipping').value;
+  const registered = document.getElementById('registered').value || null;
+
+  try {
+    const response = await fetch('/api/letterxpress/price', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({pages, color, mode, shipping, registered})
+    });
+
+    const data = await response.json();
+    if (data.success) {
+      const priceWithVAT = data.price * 1.19; // Add 19% VAT
+      document.getElementById('calculated-price').textContent =
+        `${priceWithVAT.toFixed(2)} ${data.currency} (inkl. MwSt)`;
+      document.getElementById('price-result').style.display = 'block';
+    } else {
+      const priceResult = document.getElementById('price-result');
+      priceResult.innerHTML = '<strong>Hinweis:</strong> ' + data.error;
+      priceResult.style.background = '#fff3cd';
+      priceResult.style.color = '#856404';
+      priceResult.style.display = 'block';
+    }
+  } catch (error) {
+    console.error('Error calculating price:', error);
+    alert('Fehler beim Berechnen des Preises');
+  }
+}
+
+// Load jobs
+async function loadJobs() {
+  const filter = document.getElementById('job-filter').value;
+  const loadingElement = document.getElementById('jobs-loading');
+  const containerElement = document.getElementById('jobs-container');
+  const errorElement = document.getElementById('jobs-error');
+
+  loadingElement.style.display = 'block';
+  containerElement.style.display = 'none';
+  errorElement.style.display = 'none';
+
+  try {
+    const url = filter ? `/api/letterxpress/jobs?filter=${filter}` : '/api/letterxpress/jobs';
+    const response = await fetch(url);
+    const data = await response.json();
+
+    loadingElement.style.display = 'none';
+
+    if (data.success) {
+      const jobsList = document.getElementById('jobs-list');
+      jobsList.innerHTML = '';
+
+      if (!data.jobs || data.jobs.length === 0) {
+        jobsList.innerHTML = '<tr><td colspan="7" class="empty">Keine Aufträge gefunden oder API nicht verfügbar</td></tr>';
+      } else {
+        data.jobs.forEach(job => {
+          // Extract pages and price from items array
+          let totalPages = 0;
+          let totalPrice = 0;
+          if (job.items && job.items.length > 0) {
+            job.items.forEach(item => {
+              totalPages += item.pages || 0;
+              totalPrice += item.amount || 0;
+            });
+          }
+
+          // Determine display name - use filename, notice, or first recipient address
+          let displayName = 'N/A';
+          if (job.filename_original) {
+            displayName = job.filename_original;
+          } else if (job.notice) {
+            displayName = job.notice;
+          } else if (job.items && job.items.length > 0 && job.items[0].address) {
+            // Extract first line of address
+            const firstLine = job.items[0].address.split(',')[0];
+            displayName = `Empfänger: ${firstLine}`;
+          }
+
+          const row = document.createElement('tr');
+          const priceWithVAT = totalPrice > 0 ? (totalPrice * 1.19).toFixed(2) + ' €' : 'N/A'; // Add 19% VAT
+          row.innerHTML = `
+            <td>${job.id}</td>
+            <td style="${!job.filename_original ? 'color: #6c757d; font-style: italic;' : ''}">${displayName}</td>
+            <td><span style="padding: 0.25rem 0.5rem; background: ${getStatusColor(job.status)}; color: white; border-radius: 4px; font-size: 0.85rem;">${job.status}</span></td>
+            <td>${totalPages > 0 ? totalPages : 'N/A'}</td>
+            <td>${priceWithVAT}</td>
+            <td>${job.created_at ? new Date(job.created_at).toLocaleDateString('de-DE') : 'N/A'}</td>
+            <td>
+              <button onclick="viewJobDetail(${job.id})" style="padding: 0.25rem 0.75rem; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem;">
+                Details
+              </button>
+            </td>
+          `;
+          jobsList.appendChild(row);
+        });
+      }
+
+      containerElement.style.display = 'block';
+    } else {
+      errorElement.textContent = 'Fehler beim Laden der Aufträge: ' + data.error;
+      errorElement.style.display = 'block';
+    }
+  } catch (error) {
+    console.error('Error loading jobs:', error);
+    loadingElement.style.display = 'none';
+    errorElement.textContent = 'Fehler beim Laden der Aufträge';
+    errorElement.style.display = 'block';
+  }
+}
+
+function getStatusColor(status) {
+  const colors = {
+    'queue': '#007bff',
+    'hold': '#ffc107',
+    'done': '#28a745',
+    'canceled': '#dc3545',
+    'draft': '#6c757d'
+  };
+  return colors[status] || '#6c757d';
+}
+
+// View job detail
+async function viewJobDetail(jobId) {
+  const modal = document.getElementById('job-detail-modal');
+  const content = document.getElementById('job-detail-content');
+
+  content.innerHTML = '<p style="text-align: center;">Lädt...</p>';
+  modal.style.display = 'block';
+
+  try {
+    const response = await fetch(`/api/letterxpress/jobs/${jobId}`);
+    const data = await response.json();
+
+    if (data.success) {
+      const job = data.job;
+
+      // Calculate totals from items
+      let totalPages = 0;
+      let totalPrice = 0;
+      if (job.items && job.items.length > 0) {
+        job.items.forEach(item => {
+          totalPages += item.pages || 0;
+          totalPrice += item.amount || 0;
+        });
+      }
+
+      let itemsHtml = '';
+      if (job.items && job.items.length > 0) {
+        itemsHtml = '<h3 style="margin-top: 1.25rem; margin-bottom: 0.75rem; font-size: 1rem;">Empfänger</h3>';
+        job.items.forEach((item, index) => {
+          const itemPriceWithVAT = item.amount ? (item.amount * 1.19).toFixed(2) + ' €' : 'N/A'; // Add 19% VAT
+          itemsHtml += `
+            <div style="background: #f8f9fa; padding: 0.75rem; border-radius: 4px; margin-bottom: 0.75rem; font-size: 0.9rem;">
+              <div style="margin-bottom: 0.25rem;"><strong>Empfänger ${index + 1}:</strong> ${item.address || 'N/A'}</div>
+              <div style="color: #666; font-size: 0.85rem;">
+                Seiten: ${item.pages || 'N/A'} | Preis: ${itemPriceWithVAT} | Status: ${item.status || 'N/A'}${item.tracking_code ? ` | Tracking: ${item.tracking_code}` : ''}
+              </div>
+            </div>
+          `;
+        });
+      }
+
+      const totalPriceWithVAT = totalPrice > 0 ? (totalPrice * 1.19).toFixed(2) + ' €' : 'N/A'; // Add 19% VAT
+      content.innerHTML = `
+        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem 1.5rem; font-size: 0.9rem;">
+          <div><strong>Job ID:</strong> ${job.id}</div>
+          <div><strong>Status:</strong> <span style="padding: 0.15rem 0.4rem; background: ${getStatusColor(job.status)}; color: white; border-radius: 3px; font-size: 0.8rem;">${job.status}</span></div>
+          <div style="grid-column: 1 / -1;"><strong>Dateiname:</strong> ${job.filename_original || 'N/A'}</div>
+          <div><strong>Seiten:</strong> ${totalPages > 0 ? totalPages : 'N/A'}</div>
+          <div><strong>Preis:</strong> ${totalPriceWithVAT}</div>
+          <div><strong>Farbe:</strong> ${job.color === '4' ? 'Farbig' : 'Schwarz/Weiß'}</div>
+          <div><strong>Modus:</strong> ${job.mode === 'duplex' ? 'Beidseitig' : 'Einseitig'}</div>
+          <div><strong>Versand:</strong> ${job.shipping === 'national' ? 'National' : 'International'}</div>
+          <div><strong>Einschreiben:</strong> ${job.registered || 'Nein'}</div>
+          <div><strong>Erstellt:</strong> ${job.created_at ? new Date(job.created_at).toLocaleString('de-DE', {dateStyle: 'short', timeStyle: 'short'}) : 'N/A'}</div>
+          <div><strong>Aktualisiert:</strong> ${job.updated_at ? new Date(job.updated_at).toLocaleString('de-DE', {dateStyle: 'short', timeStyle: 'short'}) : 'N/A'}</div>
+          ${job.notice ? `<div style="grid-column: 1 / -1;"><strong>Notiz:</strong> ${job.notice}</div>` : ''}
+        </div>
+        ${itemsHtml}
+        <div style="margin-top: 1.5rem; text-align: right;">
+          <button onclick="closeJobDetail()" style="padding: 0.5rem 1.5rem; background: #6c757d; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9rem;">
+            Schließen
+          </button>
+        </div>
+      `;
+    } else {
+      content.innerHTML = `<p style="color: #dc3545;">Fehler beim Laden der Job-Details: ${data.error}</p>`;
+    }
+  } catch (error) {
+    console.error('Error loading job detail:', error);
+    content.innerHTML = '<p style="color: #dc3545;">Fehler beim Laden der Job-Details</p>';
+  }
+}
+
+function closeJobDetail() {
+  document.getElementById('job-detail-modal').style.display = 'none';
+}
+
+// Load data on page load
+loadInitialData();
+loadJobs();
+
+// Auto-refresh jobs every 30 seconds
+setInterval(loadJobs, 30000);
+</script>
+{% endblock %}

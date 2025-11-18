@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}Apotheken-Rechnungen{% endblock %}</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="with-sidebar">
+  <nav class="sidebar">
+    <div class="sidebar-header">
+      <img src="{{ url_for('static', filename='logo.png') }}" alt="Mahnroboter" class="sidebar-logo">
+    </div>
+    <ul class="nav-menu">
+      <li>
+        <a href="{{ url_for('dashboard') }}" class="nav-link {% if request.endpoint == 'dashboard' %}active{% endif %}">
+          <span class="nav-icon"><i class="fas fa-chart-line"></i></span>
+          <span class="nav-label">Start</span>
+        </a>
+      </li>
+      <li>
+        <a href="{{ url_for('index') }}" class="nav-link {% if request.endpoint == 'index' %}active{% endif %}">
+          <span class="nav-icon"><i class="fas fa-file-invoice"></i></span>
+          <span class="nav-label">Rechnungen</span>
+        </a>
+      </li>
+      <li>
+        <a href="{{ url_for('sammelrechnungen') }}" class="nav-link {% if request.endpoint == 'sammelrechnungen' %}active{% endif %}">
+          <span class="nav-icon"><i class="fas fa-layer-group"></i></span>
+          <span class="nav-label">Sammelrechnungen</span>
+        </a>
+      </li>
+      <li>
+        <a href="{{ url_for('mahnungen') }}" class="nav-link {% if request.endpoint == 'mahnungen' %}active{% endif %}">
+          <span class="nav-icon"><i class="fas fa-exclamation-triangle"></i></span>
+          <span class="nav-label">Mahnungen</span>
+        </a>
+      </li>
+      <li>
+        <a href="{{ url_for('vorlagen') }}" class="nav-link {% if request.endpoint == 'vorlagen' %}active{% endif %}">
+          <span class="nav-icon"><i class="fas fa-file-alt"></i></span>
+          <span class="nav-label">Vorlagen</span>
+        </a>
+      </li>
+      <li>
+        <a href="{{ url_for('personenverwaltung') }}" class="nav-link {% if request.endpoint == 'personenverwaltung' %}active{% endif %}">
+          <span class="nav-icon"><i class="fas fa-users"></i></span>
+          <span class="nav-label">Personenverwaltung</span>
+        </a>
+      </li>
+      <li>
+        <a href="{{ url_for('letterxpress') }}" class="nav-link {% if request.endpoint == 'letterxpress' %}active{% endif %}">
+          <span class="nav-icon"><i class="fas fa-envelope"></i></span>
+          <span class="nav-label">LetterXpress</span>
+        </a>
+      </li>
+    </ul>
+  </nav>
+
+  <main class="main-content">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

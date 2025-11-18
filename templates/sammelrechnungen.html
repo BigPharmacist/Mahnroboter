@@ -1,0 +1,718 @@
+{% extends "base.html" %}
+
+{% block title %}Sammelrechnungen{% endblock %}
+
+{% block content %}
+<header>
+  <h1>Sammelrechnungen</h1>
+  <p class="subtitle">Übersicht aller erstellten Sammelrechnungen</p>
+</header>
+
+<section class="stats-summary">
+  <div class="stat-card">
+    <div class="stat-label">Anzahl Sammelrechnungen</div>
+    <div class="stat-value">{{ collective_invoices|length }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Anzahl Monate</div>
+    <div class="stat-value">{{ grouped_by_month|length }}</div>
+  </div>
+</section>
+
+{% if grouped_by_month %}
+<section class="customers-container">
+  <div class="collapse-controls">
+    <button class="btn btn-secondary btn-sm" onclick="toggleAllGroups()" id="toggleAllBtn">
+      Alle einklappen
+    </button>
+    <button class="btn btn-primary btn-sm" onclick="showLetterXpressDialog()" id="sendBtn">
+      📮 Per LetterXpress versenden
+    </button>
+  </div>
+
+  <!-- LetterXpress Options Modal -->
+  <div id="letterxpressModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>LetterXpress Versandoptionen</h2>
+        <span class="modal-close" onclick="closeLetterXpressDialog()">&times;</span>
+      </div>
+      <div class="modal-body">
+        <form id="letterxpressForm">
+          <div class="form-group">
+            <label for="colorOption">Druck</label>
+            <select id="colorOption" class="form-control">
+              <option value="1" selected>Schwarz-Weiß (1c)</option>
+              <option value="4">Farbig (4c)</option>
+            </select>
+            <small class="form-text">Schwarz-Weiß ist kostengünstiger</small>
+          </div>
+
+          <div class="form-group">
+            <label for="modeOption">Druckmodus</label>
+            <select id="modeOption" class="form-control">
+              <option value="duplex" selected>Duplex (beidseitig)</option>
+              <option value="simplex">Simplex (einseitig)</option>
+            </select>
+            <small class="form-text">Duplex spart Papier, fügt bei ungeraden Seitenzahlen eine leere Seite hinzu</small>
+          </div>
+
+          <div class="form-group">
+            <label for="shippingOption">Versandart</label>
+            <select id="shippingOption" class="form-control">
+              <option value="national" selected>National (Deutschland)</option>
+              <option value="international">International</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="registeredOption">Einschreiben</label>
+            <select id="registeredOption" class="form-control">
+              <option value="" selected>Kein Einschreiben (Standard)</option>
+              <option value="r1">Einschreiben Einwurf (R1)</option>
+              <option value="r2">Einschreiben Rückschein (R2)</option>
+            </select>
+            <small class="form-text">Einschreiben verursachen zusätzliche Kosten</small>
+          </div>
+
+          <div class="form-group">
+            <label for="apiModeOption">API-Modus</label>
+            <select id="apiModeOption" class="form-control" onchange="updateModeWarning()">
+              <option value="test">TEST-MODUS (keine echten Briefe)</option>
+              <option value="live">LIVE-MODUS (echte Briefe & Kosten!) ⚠️</option>
+            </select>
+            <small class="form-text mode-warning" id="modeWarning" style="display:none; color: #dc3545; font-weight: 600;">
+              ⚠️ ACHTUNG: LIVE-MODUS versendet echte Briefe und verursacht echte Kosten!
+            </small>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeLetterXpressDialog()">
+          Abbrechen
+        </button>
+        <button type="button" class="btn btn-primary" onclick="confirmAndSend()">
+          Jetzt versenden
+        </button>
+      </div>
+    </div>
+  </div>
+
+  {% for month, invoices in grouped_by_month.items()|sort(reverse=True) %}
+  <div class="customer-group">
+    <div class="customer-header" onclick="toggleCustomerGroup(this)">
+      <div class="customer-info">
+        <h3>📅 {{ month.split('-')[1] }}.{{ month.split('-')[0] }}</h3>
+        <small class="muted">{{ month }}</small>
+      </div>
+      <div class="customer-summary">
+        <span class="summary-text">
+          {{ invoices|length }} Sammelrechnung{{ 'en' if invoices|length != 1 else '' }}
+        </span>
+      </div>
+      <span class="collapse-icon">▼</span>
+    </div>
+
+    <div class="customer-invoices">
+      <table class="invoice-table">
+        <thead>
+          <tr>
+            <th style="width: 40px;">
+              <input type="checkbox" class="select-all-checkbox"
+                     onchange="toggleAllInGroup(this)" title="Alle auswählen/abwählen">
+            </th>
+            <th>#</th>
+            <th>Kunde</th>
+            <th>Erstellt am</th>
+            <th>Größe</th>
+            <th>LetterXpress</th>
+            <th>PDF</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for invoice in invoices|sort(attribute='customer_name') %}
+          <tr>
+            <td>
+              <input type="checkbox" class="invoice-checkbox"
+                     data-path="{{ invoice.relative_path }}"
+                     data-filename="{{ invoice.filename }}"
+                     onchange="updateSelectionCount()">
+            </td>
+            <td class="row-number">{{ loop.index }}</td>
+            <td><strong>{{ invoice.customer_name }}</strong></td>
+            <td>{{ invoice.created_at }}</td>
+            <td>{{ "%.1f"|format(invoice.file_size_kb) }} KB</td>
+            <td>
+              {% if invoice.letterxpress_status %}
+                <div class="lx-status-info">
+                  <span class="lx-job-id" title="{{ invoice.letterxpress_status.mode|upper }}-Modus">
+                    ✅ #{{ invoice.letterxpress_status.job_id }}
+                  </span>
+                  <small class="lx-date">{{ invoice.letterxpress_status.submitted_at }}</small>
+                </div>
+              {% endif %}
+            </td>
+            <td>
+              <a href="{{ url_for('serve_pdf', relative_path=invoice.relative_path) }}"
+                 target="_blank" class="btn-link">PDF anzeigen</a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endfor %}
+</section>
+{% else %}
+<section class="empty-state">
+  <p>Keine Sammelrechnungen gefunden.</p>
+  <p class="muted">Erstellen Sie Sammelrechnungen über die Rechnungsansicht.</p>
+</section>
+{% endif %}
+
+<script>
+function toggleCustomerGroup(header) {
+  const group = header.parentElement;
+  group.classList.toggle('collapsed');
+}
+
+function toggleAllGroups() {
+  const groups = document.querySelectorAll('.customer-group');
+  const btn = document.getElementById('toggleAllBtn');
+  const anyExpanded = Array.from(groups).some(g => !g.classList.contains('collapsed'));
+
+  groups.forEach(group => {
+    if (anyExpanded) {
+      group.classList.add('collapsed');
+    } else {
+      group.classList.remove('collapsed');
+    }
+  });
+
+  btn.textContent = anyExpanded ? 'Alle ausklappen' : 'Alle einklappen';
+}
+
+function toggleAllInGroup(checkbox) {
+  const table = checkbox.closest('table');
+  const checkboxes = table.querySelectorAll('.invoice-checkbox');
+  checkboxes.forEach(cb => {
+    cb.checked = checkbox.checked;
+  });
+  updateSelectionCount();
+}
+
+function updateSelectionCount() {
+  const selectedCount = document.querySelectorAll('.invoice-checkbox:checked').length;
+  const sendBtn = document.getElementById('sendBtn');
+
+  if (selectedCount > 0) {
+    sendBtn.textContent = `📮 ${selectedCount} ausgewählte versenden`;
+    sendBtn.disabled = false;
+  } else {
+    sendBtn.textContent = '📮 Per LetterXpress versenden';
+    sendBtn.disabled = true;
+  }
+}
+
+async function showLetterXpressDialog() {
+  const selectedCheckboxes = document.querySelectorAll('.invoice-checkbox:checked');
+
+  if (selectedCheckboxes.length === 0) {
+    alert('Bitte wählen Sie mindestens eine Sammelrechnung aus.');
+    return;
+  }
+
+  // Load current mode and set dropdown
+  const mode = await checkLetterXpressMode();
+  document.getElementById('apiModeOption').value = mode;
+  updateModeWarning();
+
+  // Show modal
+  document.getElementById('letterxpressModal').style.display = 'block';
+}
+
+function updateModeWarning() {
+  const mode = document.getElementById('apiModeOption').value;
+  const warning = document.getElementById('modeWarning');
+
+  if (mode === 'live') {
+    warning.style.display = 'block';
+  } else {
+    warning.style.display = 'none';
+  }
+}
+
+function closeLetterXpressDialog() {
+  document.getElementById('letterxpressModal').style.display = 'none';
+}
+
+async function confirmAndSend() {
+  const selectedCheckboxes = document.querySelectorAll('.invoice-checkbox:checked');
+
+  if (selectedCheckboxes.length === 0) {
+    alert('Keine Rechnungen ausgewählt.');
+    closeLetterXpressDialog();
+    return;
+  }
+
+  // Get selected options
+  const color = document.getElementById('colorOption').value;
+  const mode = document.getElementById('modeOption').value;
+  const shipping = document.getElementById('shippingOption').value;
+  const registered = document.getElementById('registeredOption').value || null;
+  const apiMode = document.getElementById('apiModeOption').value;
+
+  const pdfPaths = Array.from(selectedCheckboxes).map(cb => cb.dataset.path);
+
+  // Build confirmation message
+  const colorText = color === '4' ? 'Farbig' : 'Schwarz-Weiß';
+  const modeText = mode === 'duplex' ? 'Beidseitig' : 'Einseitig';
+  const shippingText = shipping === 'national' ? 'National' : 'International';
+  const registeredText = registered === 'r1' ? ' + Einschreiben Einwurf' :
+                        registered === 'r2' ? ' + Einschreiben Rückschein' : '';
+  const apiModeText = apiMode === 'test' ? 'TEST-MODUS (keine echten Briefe)' : '⚠️ LIVE-MODUS (echte Briefe & Kosten!)';
+
+  const confirmMsg = `${selectedCheckboxes.length} Sammelrechnung(en) versenden?\n\n` +
+                     `Optionen:\n` +
+                     `- ${colorText}\n` +
+                     `- ${modeText}\n` +
+                     `- ${shippingText}${registeredText}\n\n` +
+                     `API-Modus: ${apiModeText}`;
+
+  if (!confirm(confirmMsg)) {
+    return;
+  }
+
+  // Close modal
+  closeLetterXpressDialog();
+
+  const sendBtn = document.getElementById('sendBtn');
+  const originalText = sendBtn.textContent;
+
+  // Disable button and show loading state
+  sendBtn.disabled = true;
+  sendBtn.textContent = '⏳ Wird versendet...';
+
+  try {
+    const response = await fetch('/api/send-letterxpress', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        pdf_paths: pdfPaths,
+        color: color,
+        mode: mode,
+        shipping: shipping,
+        registered: registered,
+        api_mode: apiMode
+      })
+    });
+
+    const result = await response.json();
+
+    if (result.success) {
+      const stats = result.statistics;
+      const apiMode = result.mode === 'test' ? 'TEST-MODUS' : 'LIVE-MODUS';
+
+      let message = `✅ Erfolgreich versendet (${apiMode})!\n\n`;
+      message += `Erfolgreich: ${stats.successful}/${stats.total}\n`;
+      message += `Fehlgeschlagen: ${stats.failed}\n`;
+      message += `Gesamtkosten: ${stats.total_price.toFixed(2)} EUR\n`;
+
+      if (result.balance !== null) {
+        message += `Aktuelles Guthaben: ${result.balance} ${result.currency}\n`;
+      }
+
+      message += `\n--- Details ---\n`;
+      result.results.forEach(r => {
+        if (r.success) {
+          message += `✓ ${r.filename}: Job-ID ${r.job_id}, ${r.price.toFixed(2)} EUR\n`;
+        } else {
+          message += `✗ ${r.filename}: ${r.error}\n`;
+        }
+      });
+
+      alert(message);
+
+      // Uncheck all checkboxes
+      selectedCheckboxes.forEach(cb => cb.checked = false);
+      document.querySelectorAll('.select-all-checkbox').forEach(cb => cb.checked = false);
+      updateSelectionCount();
+    } else {
+      alert(`❌ Fehler beim Versenden:\n${result.error}`);
+    }
+  } catch (error) {
+    console.error('Error sending via LetterXpress:', error);
+    alert(`❌ Fehler beim Versenden:\n${error.message}`);
+  } finally {
+    sendBtn.disabled = false;
+    sendBtn.textContent = originalText;
+  }
+}
+
+// Close modal when clicking outside
+window.onclick = function(event) {
+  const modal = document.getElementById('letterxpressModal');
+  if (event.target === modal) {
+    closeLetterXpressDialog();
+  }
+}
+
+async function checkLetterXpressMode() {
+  // Get the current LetterXpress mode from the server
+  try {
+    const response = await fetch('/api/letterxpress-mode');
+    const result = await response.json();
+    if (result.success) {
+      return result.mode;
+    }
+    return 'unbekannt';
+  } catch (error) {
+    console.error('Error fetching LetterXpress mode:', error);
+    return 'unbekannt';
+  }
+}
+
+// Initially collapse all groups and disable send button
+document.addEventListener('DOMContentLoaded', function() {
+  const groups = document.querySelectorAll('.customer-group');
+  groups.forEach(group => group.classList.add('collapsed'));
+  document.getElementById('toggleAllBtn').textContent = 'Alle ausklappen';
+  updateSelectionCount();
+});
+</script>
+
+<style>
+.customer-group {
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+  background: white;
+}
+
+.customer-group.collapsed .customer-invoices {
+  display: none;
+}
+
+.customer-group.collapsed .collapse-icon {
+  transform: rotate(-90deg);
+}
+
+.customer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.customer-header:hover {
+  background: #f8f9fa;
+}
+
+.customer-info h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.customer-info .muted {
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.customer-summary {
+  color: #666;
+}
+
+.collapse-icon {
+  transition: transform 0.2s;
+  font-size: 1.2rem;
+  color: #666;
+}
+
+.customer-invoices {
+  border-top: 1px solid #eee;
+  padding: 1rem;
+}
+
+.invoice-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.invoice-table th {
+  background: #f8f9fa;
+  padding: 0.75rem;
+  text-align: left;
+  font-weight: 600;
+  border-bottom: 2px solid #dee2e6;
+}
+
+.invoice-table td {
+  padding: 0.75rem;
+  border-bottom: 1px solid #eee;
+}
+
+.invoice-table tr:hover {
+  background: #f8f9fa;
+}
+
+.row-number {
+  color: #999;
+  font-size: 0.9rem;
+}
+
+.btn-link {
+  color: #007bff;
+  text-decoration: none;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+}
+
+.btn-link:hover {
+  background: #e7f3ff;
+  text-decoration: underline;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 3rem;
+  color: #666;
+}
+
+.empty-state .muted {
+  color: #999;
+  margin-top: 0.5rem;
+}
+
+.collapse-controls {
+  margin-bottom: 1rem;
+  text-align: right;
+}
+
+.btn {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: all 0.2s;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: #007bff;
+  color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #0056b3;
+}
+
+.btn-secondary {
+  background: #6c757d;
+  color: white;
+}
+
+.btn-secondary:hover {
+  background: #5a6268;
+}
+
+.btn-sm {
+  padding: 0.25rem 0.75rem;
+  font-size: 0.85rem;
+}
+
+.invoice-checkbox,
+.select-all-checkbox {
+  cursor: pointer;
+  width: 18px;
+  height: 18px;
+}
+
+.collapse-controls {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.stats-summary {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.stat-card {
+  flex: 1;
+  background: white;
+  padding: 1.5rem;
+  border-radius: 8px;
+  border: 1px solid #ddd;
+}
+
+.stat-label {
+  font-size: 0.9rem;
+  color: #666;
+  margin-bottom: 0.5rem;
+}
+
+.stat-value {
+  font-size: 2rem;
+  font-weight: bold;
+  color: #333;
+}
+
+header {
+  margin-bottom: 2rem;
+}
+
+header h1 {
+  margin: 0 0 0.5rem 0;
+  font-size: 2rem;
+}
+
+.subtitle {
+  color: #666;
+  font-size: 1rem;
+  margin: 0;
+}
+
+/* Modal Styles */
+.modal {
+  display: none;
+  position: fixed;
+  z-index: 1000;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  background-color: rgba(0, 0, 0, 0.5);
+}
+
+.modal-content {
+  background-color: #fefefe;
+  margin: 5% auto;
+  padding: 0;
+  border: 1px solid #888;
+  border-radius: 8px;
+  width: 90%;
+  max-width: 600px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.5rem;
+  border-bottom: 1px solid #dee2e6;
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 1.5rem;
+  color: #333;
+}
+
+.modal-close {
+  color: #aaa;
+  font-size: 28px;
+  font-weight: bold;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.modal-close:hover,
+.modal-close:focus {
+  color: #000;
+}
+
+.modal-body {
+  padding: 1.5rem;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 1rem 1.5rem;
+  border-top: 1px solid #dee2e6;
+  background-color: #f8f9fa;
+  border-radius: 0 0 8px 8px;
+}
+
+.form-group {
+  margin-bottom: 1.5rem;
+}
+
+.form-group label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  color: #333;
+}
+
+.form-control {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+  font-size: 1rem;
+  transition: border-color 0.15s ease-in-out;
+}
+
+.form-control:focus {
+  outline: none;
+  border-color: #007bff;
+  box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
+}
+
+.form-text {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.875rem;
+  color: #6c757d;
+}
+
+.mode-info {
+  background-color: #f8f9fa;
+  padding: 1rem;
+  border-radius: 4px;
+  border-left: 4px solid #007bff;
+}
+
+.mode-info strong {
+  color: #333;
+}
+
+.mode-info span {
+  color: #007bff;
+  font-weight: 600;
+}
+
+/* LetterXpress Status Styles */
+.lx-status-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.lx-job-id {
+  font-weight: 600;
+  color: #155724;
+  font-size: 0.9rem;
+}
+
+.lx-date {
+  color: #6c757d;
+  font-size: 0.8rem;
+}
+</style>
+{% endblock %}

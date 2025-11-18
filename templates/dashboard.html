@@ -1,0 +1,430 @@
+{% extends "base.html" %}
+
+{% block title %}Start - Statistikübersicht{% endblock %}
+
+{% block content %}
+<header>
+  <h1>Statistikübersicht</h1>
+  <p class="subtitle">Übersicht über alle Rechnungen und Zahlungsstatus</p>
+</header>
+
+{% if not stats %}
+<section class="empty-state">
+  <p>Keine Daten verfügbar. Bitte scannen Sie zunächst Rechnungen.</p>
+</section>
+{% else %}
+
+<section class="month-and-help">
+  <div class="info-card-compact">
+    <span class="info-icon">📅</span>
+    <div class="info-content">
+      <span class="info-label">Aktueller Monat</span>
+      <span class="info-value">{{ stats.latest_snapshot|german_month }}</span>
+    </div>
+  </div>
+  <button class="btn-help btn-lg" onclick="openHelpModal()">
+    📖 Anleitung
+  </button>
+</section>
+
+<!-- Help Modal -->
+<div id="helpModal" class="modal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h2>📖 Anleitung - Mahnungsverwaltung</h2>
+      <span class="close" onclick="closeHelpModal()">&times;</span>
+    </div>
+    <div class="modal-body">
+      <h3>Willkommen zur Mahnungsverwaltung</h3>
+      <p>Diese Anwendung hilft Ihnen bei der Verwaltung von Rechnungen und Mahnungen für Ihre Apotheke.</p>
+
+      <h4>🏠 Start (Dashboard)</h4>
+      <ul>
+        <li>Zeigt eine Übersicht über offene und bezahlte Rechnungen</li>
+        <li>Zeigt die Top 10 Kunden mit den höchsten offenen Beträgen</li>
+        <li>Aktualisiert sich automatisch bei jedem Scan</li>
+      </ul>
+
+      <h4>📋 Rechnungen</h4>
+      <ul>
+        <li>Liste aller erfassten Rechnungen</li>
+        <li>Filterbar nach Zeitraum, Status und Email</li>
+        <li>Suchfunktion nach Name, Rechnungsnummer oder Adresse</li>
+        <li>Sortierbar nach verschiedenen Kriterien</li>
+      </ul>
+
+      <h4>⚠️ Mahnungen</h4>
+      <ul>
+        <li>Verwaltung von Mahnungen für offene Rechnungen</li>
+        <li>Erstellen von Mahnstufe 0, 1 und 2</li>
+        <li>Automatische PDF-Generierung</li>
+        <li>Versand per LetterXpress möglich</li>
+      </ul>
+
+      <h4>📦 Sammelrechnungen</h4>
+      <ul>
+        <li>Monatsweise gruppierte Rechnungen</li>
+        <li>Versand per LetterXpress</li>
+        <li>Tracking des Versandstatus</li>
+      </ul>
+
+      <h4>👥 Personenverwaltung</h4>
+      <ul>
+        <li>Verwaltung von Kundendaten</li>
+        <li>Hinterlegen von Email-Adressen und Anreden</li>
+        <li>Markieren von Kunden, die nie gemahnt werden sollen</li>
+        <li>Markieren von Kunden mit Bankeinzug</li>
+        <li>Suchfunktion zum schnellen Finden von Kunden</li>
+      </ul>
+
+      <h4>📨 LetterXpress</h4>
+      <ul>
+        <li>Integration mit LetterXpress-Versandservice</li>
+        <li>Automatischer Briefversand</li>
+        <li>Status-Tracking für versendete Briefe</li>
+      </ul>
+
+      <h4>💡 Tipps</h4>
+      <ul>
+        <li>Nutzen Sie die Suchfunktion, um schnell bestimmte Kunden zu finden</li>
+        <li>Markieren Sie Kunden mit "Nie mahnen!" um versehentliche Mahnungen zu vermeiden</li>
+        <li>Der rote pulsierende Button in der Personenverwaltung erinnert Sie daran, Änderungen zu speichern</li>
+        <li>Verwenden Sie die KI-Funktion, um Anreden automatisch zu ermitteln</li>
+      </ul>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="closeHelpModal()">Schließen</button>
+    </div>
+  </div>
+</div>
+
+<section class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-icon open">⚠</div>
+    <div class="stat-content">
+      <div class="stat-value">{{ stats.open_count }}</div>
+      <div class="stat-label">Offene Rechnungen</div>
+      <div class="stat-amount">{{ "%.2f"|format(stats.open_total) }} €</div>
+    </div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-icon paid">✓</div>
+    <div class="stat-content">
+      <div class="stat-value">{{ stats.paid_count }}</div>
+      <div class="stat-label">Bezahlte Rechnungen</div>
+      <div class="stat-amount">{{ "%.2f"|format(stats.paid_total) }} €</div>
+    </div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-icon customers">👥</div>
+    <div class="stat-content">
+      <div class="stat-value">{{ stats.unique_customers }}</div>
+      <div class="stat-label">Kunden</div>
+      <div class="stat-amount">Insgesamt</div>
+    </div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-icon total">💰</div>
+    <div class="stat-content">
+      <div class="stat-value">{{ stats.open_count + stats.paid_count }}</div>
+      <div class="stat-label">Rechnungen Gesamt</div>
+      <div class="stat-amount">{{ "%.2f"|format(stats.open_total + stats.paid_total) }} €</div>
+    </div>
+  </div>
+</section>
+
+<section class="dashboard-sections">
+  <div class="dashboard-column">
+    <div class="section-card">
+      <h3>Top 10 Kunden (nach offenen Beträgen)</h3>
+      <table class="top-customers-table">
+        <thead>
+          <tr>
+            <th>Kunde</th>
+            <th>Rechnungen</th>
+            <th>Betrag</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for customer in stats.top_customers %}
+          <tr>
+            <td>{{ customer.name }}</td>
+            <td>{{ customer.count }}</td>
+            <td class="amount">{{ "%.2f"|format(customer.total) }} €</td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="3" class="empty">Keine Daten verfügbar</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="dashboard-column">
+    <div class="section-card">
+      <h3>Snapshots (Monatsübersicht)</h3>
+      <table class="snapshots-table">
+        <thead>
+          <tr>
+            <th>Monat</th>
+            <th>Ordner</th>
+            <th>Rechnungen</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for snapshot in stats.snapshots %}
+          <tr>
+            <td>{{ snapshot.date|german_month }}</td>
+            <td>{{ snapshot.folder }}</td>
+            <td>{{ snapshot.count }}</td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="3" class="empty">Keine Snapshots verfügbar</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="quick-actions">
+  <a href="{{ url_for('index', status='open') }}" class="action-btn">Offene Rechnungen ansehen →</a>
+  <a href="{{ url_for('index', status='all') }}" class="action-btn">Alle Rechnungen ansehen →</a>
+</section>
+
+<script>
+function openHelpModal() {
+  document.getElementById('helpModal').style.display = 'block';
+  document.body.style.overflow = 'hidden';
+}
+
+function closeHelpModal() {
+  document.getElementById('helpModal').style.display = 'none';
+  document.body.style.overflow = 'auto';
+}
+
+// Close modal when clicking outside
+window.onclick = function(event) {
+  const modal = document.getElementById('helpModal');
+  if (event.target == modal) {
+    closeHelpModal();
+  }
+}
+
+// Close modal with ESC key
+document.addEventListener('keydown', function(event) {
+  if (event.key === 'Escape') {
+    closeHelpModal();
+  }
+});
+</script>
+
+<style>
+.month-and-help {
+  display: flex;
+  gap: 1rem;
+  margin: 2rem 0;
+  align-items: center;
+}
+
+.info-card-compact {
+  background: white;
+  padding: 1.5rem 2rem;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-width: 250px;
+  flex-shrink: 0;
+}
+
+.info-card-compact .info-icon {
+  font-size: 2rem;
+}
+
+.info-card-compact .info-content {
+  display: flex;
+  flex-direction: column;
+}
+
+.info-card-compact .info-label {
+  font-size: 0.875rem;
+  color: #666;
+}
+
+.info-card-compact .info-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #123C69;
+}
+
+.btn-help {
+  flex: 1;
+  max-width: 600px;
+  padding: 1.5rem 3rem;
+  background: #123C69;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 1.25rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  box-shadow: 0 2px 8px rgba(18, 60, 105, 0.2);
+}
+
+.btn-help:hover {
+  background: #0d2d4f;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(18, 60, 105, 0.3);
+}
+
+.btn-lg {
+  font-size: 1.25rem;
+  padding: 1.5rem 3rem;
+}
+
+/* Modal Styles */
+.modal {
+  display: none;
+  position: fixed;
+  z-index: 1000;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  background-color: rgba(0,0,0,0.5);
+  animation: fadeIn 0.2s;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.modal-content {
+  background-color: #fefefe;
+  margin: 3% auto;
+  padding: 0;
+  border: none;
+  border-radius: 12px;
+  width: 90%;
+  max-width: 800px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+  animation: slideIn 0.3s;
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateY(-50px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.modal-header {
+  padding: 2rem;
+  background: #123C69;
+  color: white;
+  border-radius: 12px 12px 0 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 1.75rem;
+}
+
+.close {
+  color: white;
+  font-size: 2.5rem;
+  font-weight: 300;
+  cursor: pointer;
+  line-height: 1;
+  transition: all 0.2s;
+}
+
+.close:hover,
+.close:focus {
+  color: #ddd;
+  transform: scale(1.1);
+}
+
+.modal-body {
+  padding: 2rem;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.modal-body h3 {
+  color: #123C69;
+  margin-top: 0;
+  margin-bottom: 1rem;
+  font-size: 1.5rem;
+}
+
+.modal-body h4 {
+  color: #123C69;
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
+  font-size: 1.2rem;
+}
+
+.modal-body ul {
+  margin: 0.5rem 0 1.5rem 1.5rem;
+  line-height: 1.8;
+}
+
+.modal-body li {
+  margin-bottom: 0.5rem;
+}
+
+.modal-body p {
+  line-height: 1.6;
+  color: #333;
+}
+
+.modal-footer {
+  padding: 1.5rem 2rem;
+  background: #f8f9fa;
+  border-radius: 0 0 12px 12px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.btn {
+  padding: 0.75rem 1.5rem;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  transition: all 0.2s;
+  font-weight: 600;
+}
+
+.btn-primary {
+  background: #123C69;
+  color: white;
+}
+
+.btn-primary:hover {
+  background: #0d2d4f;
+}
+</style>
+
+{% endif %}
+{% endblock %}
