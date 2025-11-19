@@ -15,6 +15,9 @@
 {% else %}
 
 <section class="month-and-help">
+  <button class="btn-import btn-xl" onclick="window.location.href='{{ url_for('index') }}'">
+    📥 Neu Importieren
+  </button>
   <div class="info-card-compact">
     <span class="info-icon">📅</span>
     <div class="info-content">
@@ -22,9 +25,6 @@
       <span class="info-value">{{ stats.latest_snapshot|german_month }}</span>
     </div>
   </div>
-  <button class="btn-help btn-lg" onclick="openHelpModal()">
-    📖 Anleitung
-  </button>
 </section>
 
 <!-- Help Modal -->
@@ -349,30 +349,34 @@ document.addEventListener('keydown', function(event) {
   color: #123C69;
 }
 
-.btn-help {
-  flex: 1;
-  max-width: 600px;
-  padding: 1.5rem 3rem;
-  background: #123C69;
+.btn-import {
+  padding: 2rem 4rem;
+  background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
   color: white;
   border: none;
-  border-radius: 8px;
-  font-size: 1.25rem;
-  font-weight: 600;
+  border-radius: 12px;
+  font-size: 1.5rem;
+  font-weight: 700;
   cursor: pointer;
-  transition: all 0.2s;
-  box-shadow: 0 2px 8px rgba(18, 60, 105, 0.2);
+  transition: all 0.3s;
+  box-shadow: 0 4px 12px rgba(40, 167, 69, 0.3);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
-.btn-help:hover {
-  background: #0d2d4f;
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(18, 60, 105, 0.3);
+.btn-import:hover {
+  background: linear-gradient(135deg, #218838 0%, #1aa179 100%);
+  transform: translateY(-3px);
+  box-shadow: 0 6px 20px rgba(40, 167, 69, 0.4);
 }
 
-.btn-lg {
-  font-size: 1.25rem;
-  padding: 1.5rem 3rem;
+.btn-import:active {
+  transform: translateY(-1px);
+}
+
+.btn-xl {
+  font-size: 1.75rem;
+  padding: 2.5rem 5rem;
 }
 
 /* Modal Styles */
