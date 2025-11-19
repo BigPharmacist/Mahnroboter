@@ -1238,6 +1238,87 @@ def create_app(config: Optional[dict] = None) -> Flask:
             latest_result = conn.execute(latest_snapshot_query).fetchone()
             latest_snapshot = latest_result['latest'] if latest_result else None
 
+            # Get reminder success statistics (paid invoices that had reminders)
+            reminder_success_query = """
+            WITH last_two_snapshots AS (
+                SELECT snapshot_date
+                FROM snapshots
+                ORDER BY snapshot_date DESC
+                LIMIT 2
+            ),
+            invoice_status AS (
+                SELECT
+                    i.id,
+                    i.amount_cents,
+                    CASE
+                        WHEN EXISTS (
+                            SELECT 1 FROM invoice_snapshots isnap2
+                            JOIN snapshots s2 ON isnap2.snapshot_id = s2.id
+                            WHERE isnap2.invoice_id = i.id
+                            AND s2.snapshot_date = (SELECT MAX(snapshot_date) FROM snapshots)
+                        ) THEN 'open'
+                        ELSE 'paid'
+                    END AS status
+                FROM invoices i
+            ),
+            reminded_and_paid AS (
+                SELECT
+                    r.reminder_level,
+                    i.amount_cents,
+                    r.created_at,
+                    (SELECT snapshot_date FROM last_two_snapshots ORDER BY snapshot_date DESC LIMIT 1) as last_month,
+                    (SELECT snapshot_date FROM last_two_snapshots ORDER BY snapshot_date DESC LIMIT 1 OFFSET 1) as second_last_month
+                FROM reminders r
+                JOIN invoices i ON r.invoice_id = i.id
+                JOIN invoice_status ist ON i.id = ist.id
+                WHERE ist.status = 'paid'
+            )
+            SELECT
+                reminder_level,
+                -- Last month
+                COUNT(CASE WHEN strftime('%Y-%m', created_at) = strftime('%Y-%m', last_month) THEN 1 END) as last_month_count,
+                SUM(CASE WHEN strftime('%Y-%m', created_at) = strftime('%Y-%m', last_month) THEN amount_cents ELSE 0 END) / 100.0 as last_month_total,
+                -- Second last month
+                COUNT(CASE WHEN strftime('%Y-%m', created_at) = strftime('%Y-%m', second_last_month) THEN 1 END) as second_last_month_count,
+                SUM(CASE WHEN strftime('%Y-%m', created_at) = strftime('%Y-%m', second_last_month) THEN amount_cents ELSE 0 END) / 100.0 as second_last_month_total,
+                -- All time
+                COUNT(*) as total_count,
+                SUM(amount_cents) / 100.0 as total_amount
+            FROM reminded_and_paid
+            GROUP BY reminder_level
+            ORDER BY reminder_level
+            """
+            reminder_success_rows = conn.execute(reminder_success_query).fetchall()
+
+            # Organize reminder success data by level
+            reminder_success = {
+                'level_0': {'last_month_count': 0, 'last_month_total': 0.0, 'second_last_month_count': 0, 'second_last_month_total': 0.0, 'total_count': 0, 'total_amount': 0.0},
+                'level_1': {'last_month_count': 0, 'last_month_total': 0.0, 'second_last_month_count': 0, 'second_last_month_total': 0.0, 'total_count': 0, 'total_amount': 0.0},
+                'level_2': {'last_month_count': 0, 'last_month_total': 0.0, 'second_last_month_count': 0, 'second_last_month_total': 0.0, 'total_count': 0, 'total_amount': 0.0}
+            }
+
+            for row in reminder_success_rows:
+                level_key = f"level_{row['reminder_level']}"
+                reminder_success[level_key] = {
+                    'last_month_count': row['last_month_count'] or 0,
+                    'last_month_total': row['last_month_total'] or 0.0,
+                    'second_last_month_count': row['second_last_month_count'] or 0,
+                    'second_last_month_total': row['second_last_month_total'] or 0.0,
+                    'total_count': row['total_count'] or 0,
+                    'total_amount': row['total_amount'] or 0.0
+                }
+
+            # Get the last two snapshot dates for display
+            last_two_dates_query = """
+            SELECT snapshot_date
+            FROM snapshots
+            ORDER BY snapshot_date DESC
+            LIMIT 2
+            """
+            snapshot_dates = [row['snapshot_date'] for row in conn.execute(last_two_dates_query).fetchall()]
+            last_month_name = snapshot_dates[0] if len(snapshot_dates) > 0 else None
+            second_last_month_name = snapshot_dates[1] if len(snapshot_dates) > 1 else None
+
             # Build stats dictionary for template
             dashboard_stats = {
                 'open_count': stats['open_count'] or 0,
@@ -1247,7 +1328,10 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 'unique_customers': stats['unique_customers'] or 0,
                 'top_customers': top_customers,
                 'snapshots': snapshots,
-                'latest_snapshot': latest_snapshot
+                'latest_snapshot': latest_snapshot,
+                'reminder_success': reminder_success,
+                'last_month_name': last_month_name,
+                'second_last_month_name': second_last_month_name
             }
 
             return render_template("dashboard.html", stats=dashboard_stats)

@@ -136,6 +136,77 @@
   </div>
 </section>
 
+<!-- Reminder Success Statistics -->
+<section class="reminder-success-section">
+  <h2 class="section-title">💰 Erfolgsstatistik der Mahnungen</h2>
+  <p class="section-subtitle">Bezahlte Rechnungen nach Mahnstufe</p>
+
+  <div class="reminder-success-grid">
+    <!-- Zahlungserinnerung (Level 0) -->
+    <div class="reminder-card level-0">
+      <div class="reminder-header">
+        <h3>📧 Zahlungserinnerung</h3>
+      </div>
+      <div class="reminder-stats">
+        <div class="stat-row">
+          <span class="stat-label">{{ stats.second_last_month_name|german_month if stats.second_last_month_name else 'Vorletzter Monat' }}</span>
+          <span class="stat-value">{{ stats.reminder_success.level_0.second_last_month_count }}x / {{ "%.2f"|format(stats.reminder_success.level_0.second_last_month_total) }} €</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">{{ stats.last_month_name|german_month if stats.last_month_name else 'Letzter Monat' }}</span>
+          <span class="stat-value">{{ stats.reminder_success.level_0.last_month_count }}x / {{ "%.2f"|format(stats.reminder_success.level_0.last_month_total) }} €</span>
+        </div>
+        <div class="stat-row total">
+          <span class="stat-label">Gesamt (alle Zeit)</span>
+          <span class="stat-value">{{ stats.reminder_success.level_0.total_count }}x / {{ "%.2f"|format(stats.reminder_success.level_0.total_amount) }} €</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 1. Mahnung (Level 1) -->
+    <div class="reminder-card level-1">
+      <div class="reminder-header">
+        <h3>⚠️ 1. Mahnung</h3>
+      </div>
+      <div class="reminder-stats">
+        <div class="stat-row">
+          <span class="stat-label">{{ stats.second_last_month_name|german_month if stats.second_last_month_name else 'Vorletzter Monat' }}</span>
+          <span class="stat-value">{{ stats.reminder_success.level_1.second_last_month_count }}x / {{ "%.2f"|format(stats.reminder_success.level_1.second_last_month_total) }} €</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">{{ stats.last_month_name|german_month if stats.last_month_name else 'Letzter Monat' }}</span>
+          <span class="stat-value">{{ stats.reminder_success.level_1.last_month_count }}x / {{ "%.2f"|format(stats.reminder_success.level_1.last_month_total) }} €</span>
+        </div>
+        <div class="stat-row total">
+          <span class="stat-label">Gesamt (alle Zeit)</span>
+          <span class="stat-value">{{ stats.reminder_success.level_1.total_count }}x / {{ "%.2f"|format(stats.reminder_success.level_1.total_amount) }} €</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2. Mahnung (Level 2) -->
+    <div class="reminder-card level-2">
+      <div class="reminder-header">
+        <h3>🚨 2. Mahnung</h3>
+      </div>
+      <div class="reminder-stats">
+        <div class="stat-row">
+          <span class="stat-label">{{ stats.second_last_month_name|german_month if stats.second_last_month_name else 'Vorletzter Monat' }}</span>
+          <span class="stat-value">{{ stats.reminder_success.level_2.second_last_month_count }}x / {{ "%.2f"|format(stats.reminder_success.level_2.second_last_month_total) }} €</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">{{ stats.last_month_name|german_month if stats.last_month_name else 'Letzter Monat' }}</span>
+          <span class="stat-value">{{ stats.reminder_success.level_2.last_month_count }}x / {{ "%.2f"|format(stats.reminder_success.level_2.last_month_total) }} €</span>
+        </div>
+        <div class="stat-row total">
+          <span class="stat-label">Gesamt (alle Zeit)</span>
+          <span class="stat-value">{{ stats.reminder_success.level_2.total_count }}x / {{ "%.2f"|format(stats.reminder_success.level_2.total_amount) }} €</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
 <section class="dashboard-sections">
   <div class="dashboard-column">
     <div class="section-card">
@@ -423,6 +494,130 @@ document.addEventListener('keydown', function(event) {
 
 .btn-primary:hover {
   background: #0d2d4f;
+}
+
+/* Reminder Success Statistics */
+.reminder-success-section {
+  margin: 3rem 0;
+  padding: 2rem;
+  background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+  border-radius: 12px;
+}
+
+.section-title {
+  font-size: 2rem;
+  color: #123C69;
+  margin: 0 0 0.5rem 0;
+  text-align: center;
+}
+
+.section-subtitle {
+  text-align: center;
+  color: #666;
+  margin: 0 0 2rem 0;
+  font-size: 1.1rem;
+}
+
+.reminder-success-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1.5rem;
+}
+
+.reminder-card {
+  background: white;
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  transition: all 0.3s;
+  border-left: 5px solid;
+}
+
+.reminder-card.level-0 {
+  border-left-color: #17a2b8; /* Info blue */
+}
+
+.reminder-card.level-1 {
+  border-left-color: #ffc107; /* Warning yellow */
+}
+
+.reminder-card.level-2 {
+  border-left-color: #dc3545; /* Danger red */
+}
+
+.reminder-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+}
+
+.reminder-header {
+  border-bottom: 2px solid #f0f0f0;
+  padding-bottom: 1rem;
+  margin-bottom: 1rem;
+}
+
+.reminder-header h3 {
+  margin: 0;
+  font-size: 1.3rem;
+  color: #123C69;
+}
+
+.reminder-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem;
+  background: #f8f9fa;
+  border-radius: 6px;
+  transition: background 0.2s;
+}
+
+.stat-row:hover {
+  background: #e9ecef;
+}
+
+.stat-row.total {
+  background: #123C69;
+  color: white;
+  font-weight: 700;
+  margin-top: 0.5rem;
+}
+
+.stat-row.total .stat-label,
+.stat-row.total .stat-value {
+  color: white;
+}
+
+.stat-label {
+  font-size: 0.9rem;
+  color: #666;
+  font-weight: 500;
+}
+
+.stat-value {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #123C69;
+}
+
+.stat-row.total .stat-value {
+  font-size: 1.2rem;
+}
+
+@media (max-width: 768px) {
+  .reminder-success-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .section-title {
+    font-size: 1.5rem;
+  }
 }
 </style>
 
