@@ -1319,6 +1319,57 @@ def create_app(config: Optional[dict] = None) -> Flask:
             last_month_name = snapshot_dates[0] if len(snapshot_dates) > 0 else None
             second_last_month_name = snapshot_dates[1] if len(snapshot_dates) > 1 else None
 
+            # Get currently open reminders (unpaid invoices with reminders)
+            open_reminders_query = """
+            WITH invoice_status AS (
+                SELECT
+                    i.id,
+                    i.amount_cents,
+                    CASE
+                        WHEN EXISTS (
+                            SELECT 1 FROM invoice_snapshots isnap2
+                            JOIN snapshots s2 ON isnap2.snapshot_id = s2.id
+                            WHERE isnap2.invoice_id = i.id
+                            AND s2.snapshot_date = (SELECT MAX(snapshot_date) FROM snapshots)
+                        ) THEN 'open'
+                        ELSE 'paid'
+                    END AS status
+                FROM invoices i
+            ),
+            last_reminder_per_invoice AS (
+                SELECT
+                    invoice_id,
+                    MAX(reminder_level) as last_reminder_level
+                FROM reminders
+                GROUP BY invoice_id
+            )
+            SELECT
+                lr.last_reminder_level as reminder_level,
+                COUNT(*) as count,
+                SUM(i.amount_cents) / 100.0 as total
+            FROM invoices i
+            JOIN invoice_status ist ON i.id = ist.id
+            JOIN last_reminder_per_invoice lr ON i.id = lr.invoice_id
+            WHERE ist.status = 'open'
+            GROUP BY lr.last_reminder_level
+            ORDER BY lr.last_reminder_level
+            """
+            open_reminders_rows = conn.execute(open_reminders_query).fetchall()
+
+            # Organize open reminders data by level
+            open_reminders = {
+                'level_0': {'count': 0, 'total': 0.0},
+                'level_1': {'count': 0, 'total': 0.0},
+                'level_2': {'count': 0, 'total': 0.0}
+            }
+
+            for row in open_reminders_rows:
+                level_key = f"level_{row['reminder_level']}"
+                open_reminders[level_key] = {
+                    'count': row['count'] or 0,
+                    'total': row['total'] or 0.0
+                }
+
             # Build stats dictionary for template
             dashboard_stats = {
                 'open_count': stats['open_count'] or 0,
@@ -1330,6 +1381,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 'snapshots': snapshots,
                 'latest_snapshot': latest_snapshot,
                 'reminder_success': reminder_success,
+                'open_reminders': open_reminders,
                 'last_month_name': last_month_name,
                 'second_last_month_name': second_last_month_name
             }

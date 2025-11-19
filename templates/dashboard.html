@@ -148,6 +148,10 @@
         <h3>📧 Zahlungserinnerung</h3>
       </div>
       <div class="reminder-stats">
+        <div class="stat-row open-reminder">
+          <span class="stat-label">💰 Aktuell offen</span>
+          <span class="stat-value">{{ stats.open_reminders.level_0.count }}x / {{ "%.2f"|format(stats.open_reminders.level_0.total) }} €</span>
+        </div>
         <div class="stat-row">
           <span class="stat-label">{{ stats.second_last_month_name|german_month if stats.second_last_month_name else 'Vorletzter Monat' }}</span>
           <span class="stat-value">{{ stats.reminder_success.level_0.second_last_month_count }}x / {{ "%.2f"|format(stats.reminder_success.level_0.second_last_month_total) }} €</span>
@@ -157,7 +161,7 @@
           <span class="stat-value">{{ stats.reminder_success.level_0.last_month_count }}x / {{ "%.2f"|format(stats.reminder_success.level_0.last_month_total) }} €</span>
         </div>
         <div class="stat-row total">
-          <span class="stat-label">Gesamt (alle Zeit)</span>
+          <span class="stat-label">✓ Gesamt bezahlt</span>
           <span class="stat-value">{{ stats.reminder_success.level_0.total_count }}x / {{ "%.2f"|format(stats.reminder_success.level_0.total_amount) }} €</span>
         </div>
       </div>
@@ -169,6 +173,10 @@
         <h3>⚠️ 1. Mahnung</h3>
       </div>
       <div class="reminder-stats">
+        <div class="stat-row open-reminder">
+          <span class="stat-label">💰 Aktuell offen</span>
+          <span class="stat-value">{{ stats.open_reminders.level_1.count }}x / {{ "%.2f"|format(stats.open_reminders.level_1.total) }} €</span>
+        </div>
         <div class="stat-row">
           <span class="stat-label">{{ stats.second_last_month_name|german_month if stats.second_last_month_name else 'Vorletzter Monat' }}</span>
           <span class="stat-value">{{ stats.reminder_success.level_1.second_last_month_count }}x / {{ "%.2f"|format(stats.reminder_success.level_1.second_last_month_total) }} €</span>
@@ -178,7 +186,7 @@
           <span class="stat-value">{{ stats.reminder_success.level_1.last_month_count }}x / {{ "%.2f"|format(stats.reminder_success.level_1.last_month_total) }} €</span>
         </div>
         <div class="stat-row total">
-          <span class="stat-label">Gesamt (alle Zeit)</span>
+          <span class="stat-label">✓ Gesamt bezahlt</span>
           <span class="stat-value">{{ stats.reminder_success.level_1.total_count }}x / {{ "%.2f"|format(stats.reminder_success.level_1.total_amount) }} €</span>
         </div>
       </div>
@@ -190,6 +198,10 @@
         <h3>🚨 2. Mahnung</h3>
       </div>
       <div class="reminder-stats">
+        <div class="stat-row open-reminder">
+          <span class="stat-label">💰 Aktuell offen</span>
+          <span class="stat-value">{{ stats.open_reminders.level_2.count }}x / {{ "%.2f"|format(stats.open_reminders.level_2.total) }} €</span>
+        </div>
         <div class="stat-row">
           <span class="stat-label">{{ stats.second_last_month_name|german_month if stats.second_last_month_name else 'Vorletzter Monat' }}</span>
           <span class="stat-value">{{ stats.reminder_success.level_2.second_last_month_count }}x / {{ "%.2f"|format(stats.reminder_success.level_2.second_last_month_total) }} €</span>
@@ -199,7 +211,7 @@
           <span class="stat-value">{{ stats.reminder_success.level_2.last_month_count }}x / {{ "%.2f"|format(stats.reminder_success.level_2.last_month_total) }} €</span>
         </div>
         <div class="stat-row total">
-          <span class="stat-label">Gesamt (alle Zeit)</span>
+          <span class="stat-label">✓ Gesamt bezahlt</span>
           <span class="stat-value">{{ stats.reminder_success.level_2.total_count }}x / {{ "%.2f"|format(stats.reminder_success.level_2.total_amount) }} €</span>
         </div>
       </div>
@@ -610,6 +622,21 @@ document.addEventListener('keydown', function(event) {
 
 .stat-row.total .stat-value {
   font-size: 0.9rem;
+}
+
+.stat-row.open-reminder {
+  background: linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%);
+  border: 1px solid #ffc107;
+  font-weight: 600;
+}
+
+.stat-row.open-reminder .stat-label,
+.stat-row.open-reminder .stat-value {
+  color: #856404;
+}
+
+.stat-row.open-reminder:hover {
+  background: linear-gradient(135deg, #ffeaa7 0%, #fdcb6e 100%);
 }
 
 @media (max-width: 1024px) {
