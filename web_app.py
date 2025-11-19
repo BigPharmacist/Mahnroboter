@@ -1156,9 +1156,104 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
     @app.route("/")
     def dashboard() -> Response:
-        """Statistics dashboard - overview page - redirects to invoices."""
-        # Redirect to invoices page (snapshots feature not active)
-        return redirect(url_for("index"))
+        """Statistics dashboard - overview page with invoice statistics."""
+        conn = sqlite3.connect(app.config["DATABASE"])
+        conn.row_factory = sqlite3.Row
+
+        try:
+            # Get overall statistics
+            stats_query = """
+            WITH invoice_status AS (
+                SELECT
+                    i.id,
+                    i.customer_name,
+                    i.amount_cents,
+                    CASE
+                        WHEN EXISTS (
+                            SELECT 1 FROM invoice_snapshots isnap2
+                            JOIN snapshots s2 ON isnap2.snapshot_id = s2.id
+                            WHERE isnap2.invoice_id = i.id
+                            AND s2.snapshot_date = (SELECT MAX(snapshot_date) FROM snapshots)
+                        ) THEN 'open'
+                        ELSE 'paid'
+                    END AS status
+                FROM invoices i
+            )
+            SELECT
+                COUNT(CASE WHEN status = 'open' THEN 1 END) as open_count,
+                SUM(CASE WHEN status = 'open' THEN amount_cents ELSE 0 END) / 100.0 as open_total,
+                COUNT(CASE WHEN status = 'paid' THEN 1 END) as paid_count,
+                SUM(CASE WHEN status = 'paid' THEN amount_cents ELSE 0 END) / 100.0 as paid_total,
+                COUNT(DISTINCT customer_name) as unique_customers
+            FROM invoice_status
+            """
+            stats = conn.execute(stats_query).fetchone()
+
+            # Get top 10 customers by open amounts
+            top_customers_query = """
+            WITH invoice_status AS (
+                SELECT
+                    i.id,
+                    i.customer_name,
+                    i.amount_cents,
+                    CASE
+                        WHEN EXISTS (
+                            SELECT 1 FROM invoice_snapshots isnap2
+                            JOIN snapshots s2 ON isnap2.snapshot_id = s2.id
+                            WHERE isnap2.invoice_id = i.id
+                            AND s2.snapshot_date = (SELECT MAX(snapshot_date) FROM snapshots)
+                        ) THEN 'open'
+                        ELSE 'paid'
+                    END AS status
+                FROM invoices i
+            )
+            SELECT
+                customer_name as name,
+                COUNT(*) as count,
+                SUM(amount_cents) / 100.0 as total
+            FROM invoice_status
+            WHERE status = 'open'
+            GROUP BY customer_name
+            ORDER BY total DESC
+            LIMIT 10
+            """
+            top_customers = [dict(row) for row in conn.execute(top_customers_query).fetchall()]
+
+            # Get snapshots overview
+            snapshots_query = """
+            SELECT
+                s.snapshot_date as date,
+                s.folder_name as folder,
+                COUNT(DISTINCT isnap.invoice_id) as count
+            FROM snapshots s
+            LEFT JOIN invoice_snapshots isnap ON s.id = isnap.snapshot_id
+            GROUP BY s.id, s.snapshot_date, s.folder_name
+            ORDER BY s.snapshot_date DESC
+            LIMIT 12
+            """
+            snapshots = [dict(row) for row in conn.execute(snapshots_query).fetchall()]
+
+            # Get latest snapshot date
+            latest_snapshot_query = "SELECT MAX(snapshot_date) as latest FROM snapshots"
+            latest_result = conn.execute(latest_snapshot_query).fetchone()
+            latest_snapshot = latest_result['latest'] if latest_result else None
+
+            # Build stats dictionary for template
+            dashboard_stats = {
+                'open_count': stats['open_count'] or 0,
+                'open_total': stats['open_total'] or 0.0,
+                'paid_count': stats['paid_count'] or 0,
+                'paid_total': stats['paid_total'] or 0.0,
+                'unique_customers': stats['unique_customers'] or 0,
+                'top_customers': top_customers,
+                'snapshots': snapshots,
+                'latest_snapshot': latest_snapshot
+            }
+
+            return render_template("dashboard.html", stats=dashboard_stats)
+
+        finally:
+            conn.close()
 
     @app.route("/mahnungen")
     def mahnungen() -> Response:
