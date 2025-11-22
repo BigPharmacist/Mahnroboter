@@ -20,51 +20,6 @@
 </section>
 
 <section class="dashboard-sections">
-  <div class="section-card" style="margin-bottom: 2rem;">
-    <h3 style="margin-bottom: 0.75rem; font-size: 1.1rem;">Preisrechner</h3>
-    <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; margin-bottom: 0.75rem;">
-      <div style="min-width: 80px;">
-        <label for="pages" style="font-size: 0.85rem; display: block; margin-bottom: 0.25rem;">Seiten:</label>
-        <input type="number" id="pages" min="1" value="2" style="width: 80px; padding: 0.4rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem;">
-      </div>
-      <div style="min-width: 130px;">
-        <label for="color" style="font-size: 0.85rem; display: block; margin-bottom: 0.25rem;">Farbe:</label>
-        <select id="color" style="width: 130px; padding: 0.4rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem;">
-          <option value="1">Schwarz/Weiß</option>
-          <option value="4" selected>Farbig</option>
-        </select>
-      </div>
-      <div style="min-width: 120px;">
-        <label for="mode" style="font-size: 0.85rem; display: block; margin-bottom: 0.25rem;">Druck:</label>
-        <select id="mode" style="width: 120px; padding: 0.4rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem;">
-          <option value="simplex">Einseitig</option>
-          <option value="duplex" selected>Beidseitig</option>
-        </select>
-      </div>
-      <div style="min-width: 130px;">
-        <label for="shipping" style="font-size: 0.85rem; display: block; margin-bottom: 0.25rem;">Versand:</label>
-        <select id="shipping" style="width: 130px; padding: 0.4rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem;">
-          <option value="national" selected>National</option>
-          <option value="international">International</option>
-        </select>
-      </div>
-      <div style="min-width: 130px;">
-        <label for="registered" style="font-size: 0.85rem; display: block; margin-bottom: 0.25rem;">Einschreiben:</label>
-        <select id="registered" style="width: 130px; padding: 0.4rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem;">
-          <option value="">Nein</option>
-          <option value="r1">Einwurf</option>
-          <option value="r2">Einschreiben</option>
-        </select>
-      </div>
-      <button onclick="calculatePrice()" style="padding: 0.4rem 1rem; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9rem; height: 34px;">
-        Preis berechnen
-      </button>
-    </div>
-    <div id="price-result" style="margin-top: 0.5rem; padding: 0.75rem; background: #f8f9fa; border-radius: 4px; display: none; font-size: 0.95rem;">
-      <strong>Preis:</strong> <span id="calculated-price"></span>
-    </div>
-  </div>
-
   <div class="section-card">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
       <h3>Druckaufträge</h3>
@@ -137,40 +92,6 @@ async function loadInitialData() {
   }
 }
 
-// Calculate price
-async function calculatePrice() {
-  const pages = parseInt(document.getElementById('pages').value);
-  const color = document.getElementById('color').value;
-  const mode = document.getElementById('mode').value;
-  const shipping = document.getElementById('shipping').value;
-  const registered = document.getElementById('registered').value || null;
-
-  try {
-    const response = await fetch('/api/letterxpress/price', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({pages, color, mode, shipping, registered})
-    });
-
-    const data = await response.json();
-    if (data.success) {
-      const priceWithVAT = data.price * 1.19; // Add 19% VAT
-      document.getElementById('calculated-price').textContent =
-        `${priceWithVAT.toFixed(2)} ${data.currency} (inkl. MwSt)`;
-      document.getElementById('price-result').style.display = 'block';
-    } else {
-      const priceResult = document.getElementById('price-result');
-      priceResult.innerHTML = '<strong>Hinweis:</strong> ' + data.error;
-      priceResult.style.background = '#fff3cd';
-      priceResult.style.color = '#856404';
-      priceResult.style.display = 'block';
-    }
-  } catch (error) {
-    console.error('Error calculating price:', error);
-    alert('Fehler beim Berechnen des Preises');
-  }
-}
-
 // Load jobs
 async function loadJobs() {
   const filter = document.getElementById('job-filter').value;
@@ -221,6 +142,25 @@ async function loadJobs() {
 
           const row = document.createElement('tr');
           const priceWithVAT = totalPrice > 0 ? (totalPrice * 1.19).toFixed(2) + ' €' : 'N/A'; // Add 19% VAT
+
+          // Action buttons - show different buttons for draft jobs
+          let actionButtons = `
+            <button onclick="viewJobDetail(${job.id})" style="padding: 0.25rem 0.75rem; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem;">
+              Details
+            </button>
+          `;
+
+          if (job.status === 'draft') {
+            actionButtons += `
+              <button onclick="activateJob(${job.id})" style="padding: 0.25rem 0.75rem; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; margin-left: 0.25rem;">
+                Aktivieren
+              </button>
+              <button onclick="deleteJob(${job.id})" style="padding: 0.25rem 0.75rem; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; margin-left: 0.25rem;">
+                Löschen
+              </button>
+            `;
+          }
+
           row.innerHTML = `
             <td>${job.id}</td>
             <td style="${!job.filename_original ? 'color: #6c757d; font-style: italic;' : ''}">${displayName}</td>
@@ -229,9 +169,7 @@ async function loadJobs() {
             <td>${priceWithVAT}</td>
             <td>${job.created_at ? new Date(job.created_at).toLocaleDateString('de-DE') : 'N/A'}</td>
             <td>
-              <button onclick="viewJobDetail(${job.id})" style="padding: 0.25rem 0.75rem; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem;">
-                Details
-              </button>
+              ${actionButtons}
             </td>
           `;
           jobsList.appendChild(row);
@@ -337,6 +275,54 @@ async function viewJobDetail(jobId) {
 
 function closeJobDetail() {
   document.getElementById('job-detail-modal').style.display = 'none';
+}
+
+// Delete a draft job
+async function deleteJob(jobId) {
+  if (!confirm(`Möchten Sie den Draft-Job #${jobId} wirklich löschen?`)) {
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/letterxpress/jobs/${jobId}`, {
+      method: 'DELETE'
+    });
+    const data = await response.json();
+
+    if (data.success) {
+      alert(data.message || 'Job erfolgreich gelöscht');
+      loadJobs(); // Reload jobs list
+    } else {
+      alert('Fehler beim Löschen: ' + data.error);
+    }
+  } catch (error) {
+    console.error('Error deleting job:', error);
+    alert('Fehler beim Löschen des Jobs');
+  }
+}
+
+// Activate a draft job
+async function activateJob(jobId) {
+  if (!confirm(`Möchten Sie den Draft-Job #${jobId} aktivieren (auf LIVE setzen)?\n\nDies bedeutet, dass der Brief gedruckt und versendet wird!`)) {
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/letterxpress/jobs/${jobId}/activate`, {
+      method: 'PUT'
+    });
+    const data = await response.json();
+
+    if (data.success) {
+      alert(data.message || 'Job erfolgreich aktiviert');
+      loadJobs(); // Reload jobs list
+    } else {
+      alert('Fehler beim Aktivieren: ' + data.error);
+    }
+  } catch (error) {
+    console.error('Error activating job:', error);
+    alert('Fehler beim Aktivieren des Jobs');
+  }
 }
 
 // Load data on page load

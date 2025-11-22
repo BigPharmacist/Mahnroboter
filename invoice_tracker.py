@@ -43,7 +43,7 @@ DEFAULT_DB_PATH = BASE_DIR / "invoice_data.db"
 CUSTOMER_MARKERS = {"Herr", "Herrn", "Frau", "Familie"}
 DATE_PATTERN = re.compile(r"(?:Datum:\s*(\d{2}\.\d{2}\.\d{4})|(\d{2}\.\d{2}\.\d{4})\s*Datum:)")
 INVOICE_NO_PATTERN = re.compile(r"(?:Rechnungs-Nr|Deckblatt-Nr):\s*([\w\-\/]+)")
-TOTAL_PATTERN = re.compile(r"(?:Gesamtsumme|Zwischensumme|Rechnungsbetrag).*?([0-9]+[,\.][0-9]{2})\s*€")
+TOTAL_PATTERN = re.compile(r"(?:Gesamtsumme|Zwischensumme|Rechnungsbetrag).*?([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})\s*€")
 
 
 @dataclass
@@ -208,6 +208,23 @@ def init_db(conn: sqlite3.Connection) -> None:
             status TEXT,
             customer_name TEXT,
             month TEXT
+        )
+        """
+    )
+
+    # Create mahnungen_letterxpress table for tracking Letterxpress submissions of reminders
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mahnungen_letterxpress (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT NOT NULL,
+            pdf_path TEXT NOT NULL UNIQUE,
+            letterxpress_job_id INTEGER NOT NULL,
+            submitted_at TEXT NOT NULL DEFAULT (datetime('now')),
+            mode TEXT NOT NULL CHECK(mode IN ('test', 'live')),
+            price REAL,
+            status TEXT,
+            customer_name TEXT
         )
         """
     )

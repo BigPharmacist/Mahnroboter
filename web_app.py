@@ -51,6 +51,10 @@ from pypdf import PdfWriter, PdfReader
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
+from reportlab.lib.utils import ImageReader
+from reportlab.platypus import Paragraph
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.enums import TA_JUSTIFY
 from invoice_tracker import (
     find_pdfs,
     init_db,
@@ -481,6 +485,77 @@ def determine_salutation_for_customer(customer_name: str) -> Optional[str]:
     return determine_gender_via_ai(first_name)
 
 
+def draw_justified_paragraph(c, text, x, y, width, font_size=10, font_name='Helvetica'):
+    """
+    Draw a justified paragraph at given position.
+    Returns the new y position after the paragraph.
+    """
+    style = ParagraphStyle(
+        'Justified',
+        fontName=font_name,
+        fontSize=font_size,
+        alignment=TA_JUSTIFY,
+        leading=font_size * 1.2
+    )
+
+    p = Paragraph(text, style)
+    w, h = p.wrap(width, 1000)  # wrap to given width
+    p.drawOn(c, x, y - h)
+    return y - h  # return new y position
+
+
+def draw_footer(c, left_margin, width, footer_y):
+    """Draw footer with bank details and company info (for Sammelrechnungen)."""
+    c.setFont("Helvetica", 8)
+    c.line(left_margin, footer_y + 15, width - 25 * mm, footer_y + 15)
+    c.drawString(left_margin, footer_y, "Bankverbindung: Sparkasse Worms-Alzey-Ried, IBAN: DE51 5535 0010 0033 7173 83, BIC: MALADE51WOR")
+    c.drawString(left_margin, footer_y - 10, "Inhaber: Matthias Blüm")
+    c.drawString(left_margin, footer_y - 20, "Gerichtsstand: Mainz | HRA-Nummer: 31710")
+
+
+def draw_reminder_footer(c, left_margin, width, footer_y):
+    """Draw footer for reminder documents (Mahnungen)."""
+    c.setFont("Helvetica", 7)
+    c.line(left_margin, footer_y + 15, width - 25 * mm, footer_y + 15)
+    c.drawString(left_margin, footer_y, "Apotheke am Damm | Inh. Matthias Blüm, e.K. | Am Damm 17 | 55232 Alzey")
+    c.drawString(left_margin, footer_y - 9, "Handelsregister: HRA 31710, Registergericht: Amtsgericht Mainz | USt-IdNr. DE814983365")
+
+
+def check_page_break(c, current_y, needed_space, left_margin, width, height, is_reminder=False):
+    """
+    Check if page break is needed and handle it.
+
+    Args:
+        c: ReportLab canvas
+        current_y: Current Y position
+        needed_space: Space needed for the next content block
+        left_margin: Left margin
+        width: Page width
+        height: Page height
+        is_reminder: If True, use reminder footer style
+
+    Returns:
+        New Y position (either current or reset to top of new page)
+    """
+    FOOTER_SPACE = 120  # Space reserved for footer (footer at 80, needs ~40 pixels)
+    MIN_Y = FOOTER_SPACE
+
+    if current_y - needed_space < MIN_Y:
+        # Draw footer on current page
+        if is_reminder:
+            draw_reminder_footer(c, left_margin, width, 80)
+        else:
+            draw_footer(c, left_margin, width, 80)
+
+        # Start new page
+        c.showPage()
+
+        # Reset to top of page (leaving space for header if needed)
+        return height - 100
+
+    return current_y
+
+
 def create_cover_letter_pdf(
     customer_name: str,
     customer_address: str,
@@ -505,23 +580,26 @@ def create_cover_letter_pdf(
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
 
-    # Pharmacy info (top right)
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(360, height - 50, "Apotheke am Damm")
-    c.setFont("Helvetica", 10)
-    c.drawString(360, height - 65, "Am Damm 17")
-    c.drawString(360, height - 80, "55232 Alzey")
-    c.drawString(360, height - 95, "Tel.: 06731-548846")
-    c.drawString(360, height - 110, "Fax: 06731-548847")
-
     # Return address (small, above recipient address)
-    left_margin = 25 * mm
-    return_address_y = height - (20 * mm)
+    # DIN 5008: starts at 44mm from top, max height 5mm
+    # ADJUSTED: +5mm right, +4mm down
+    left_margin = 25 * mm  # Was 20 * mm
+    return_address_y = height - (48 * mm)  # Was (44 * mm)
+
+    # Pharmacy info (right side, starting at 44mm)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(360, return_address_y, "Apotheke am Damm")
+    c.setFont("Helvetica", 10)
+    c.drawString(360, return_address_y - 15, "Am Damm 17")
+    c.drawString(360, return_address_y - 30, "55232 Alzey")
+    c.drawString(360, return_address_y - 45, "Tel.: 06731-548846")
+    c.drawString(360, return_address_y - 60, "Fax: 06731-548847")
     c.setFont("Helvetica", 8)
     c.drawString(left_margin, return_address_y, "Apotheke am Damm, Am Damm 17, 55232 Alzey")
 
     # Recipient address (must be between 66mm and 88mm from top - DIN 5008)
-    recipient_y_start = height - (66 * mm)
+    # ADJUSTED: +10mm down, +5mm right
+    recipient_y_start = height - (76 * mm)  # Was (66 * mm)
     c.setFont("Helvetica", 11)
 
     # Parse address
@@ -627,9 +705,13 @@ def create_cover_letter_pdf(
 
     # Older open invoices section
     if older_open_invoices:
+        # Check if we need a page break (header + rows + footer + margin)
+        needed_space = 70 + (len(older_open_invoices) * 12)
+        content_y = check_page_break(c, content_y, needed_space, left_margin, width, height)
+
         content_y -= 20
         c.setFont("Helvetica", 10)
-        c.drawString(left_margin, content_y, "Bitte beachten Sie außerdem folgende noch offene Rechnungen:")
+        c.drawString(left_margin, content_y, "Bitte beachten Sie außerdem folgende noch offenen Rechnungen:")
 
         content_y -= 15
         c.setFont("Helvetica-Bold", 9)
@@ -674,77 +756,62 @@ def create_cover_letter_pdf(
     c.drawString(left_margin, content_y, "Ihr Team der Apotheke am Damm")
 
     # Footer
-    footer_y = 80
-    c.setFont("Helvetica", 8)
-    c.line(left_margin, footer_y + 15, width - 25 * mm, footer_y + 15)
-    c.drawString(left_margin, footer_y, "Bankverbindung: Sparkasse Worms-Alzey-Ried, IBAN: DE51 5535 0010 0033 7173 83, BIC: MALADE51WOR")
-    c.drawString(left_margin, footer_y - 10, "Inhaber/in: Matthias Blüm")
-    c.drawString(left_margin, footer_y - 20, "Gerichtsstand: Alzey | HRA-Nummer: 31710")
+    draw_footer(c, left_margin, width, 80)
 
     # Page 2: Additional information
     c.showPage()
 
-    # Pharmacy info (top right) on page 2
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(360, height - 50, "Apotheke am Damm")
-    c.setFont("Helvetica", 10)
-    c.drawString(360, height - 65, "Inh. Matthias Blüm, e.K.")
-    c.drawString(360, height - 80, "Am Damm 17")
-    c.drawString(360, height - 95, "55232 Alzey")
-    c.drawString(360, height - 110, "Tel.: 06731-548846")
-    c.drawString(360, height - 125, "info@apothekeamdamm.de")
+    # Co-payment exemption notice (at top of page 2)
+    info_y = height - 150
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(left_margin, info_y, "Hinweis bei Zuzahlungsbefreiung:")
+
+    info_y -= 15
+    text_width = width - left_margin - 25 * mm
+    text = ("Trotz Befreiung von der Rezeptgebühr ist der Rechnungsbetrag fällig, da das Rezept/die Rezepte vom Arzt als "
+            "\"gebührenpflichtig\" gekennzeichnet wurde(n). Mit dieser Rechnung und einem Zahlungsnachweis erhalten Sie den "
+            "Betrag von Ihrer Krankenkasse erstattet. Bitte reichen Sie uns ebenfalls eine Kopie des Befreiungsausweises ein. "
+            "Für Rückfragen helfen wir Ihnen natürlich gerne weiter.")
+    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
 
     # Title
-    info_y = height - 150
+    info_y -= 30
     c.setFont("Helvetica-Bold", 12)
     c.drawString(left_margin, info_y, "Weitere Informationen und Hinweise")
 
     info_y -= 25
-    c.setFont("Helvetica", 10)
 
     # Paragraph 1
-    c.drawString(left_margin, info_y, "Sollten Sie den Betrag bereits überwiesen haben, betrachten Sie dieses Schreiben bitte als")
+    text = "Sollten Sie den Betrag bereits überwiesen haben, betrachten Sie dieses Schreiben bitte als gegenstandslos. In diesem Fall bitten wir um Entschuldigung für die Unannehmlichkeiten."
+    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
     info_y -= 12
-    c.drawString(left_margin, info_y, "gegenstandslos. In diesem Fall bitten wir um Entschuldigung für die Unannehmlichkeiten.")
-    info_y -= 20
 
     # Paragraph 2
-    c.drawString(left_margin, info_y, "Falls Sie Fragen zu den Rechnungspositionen haben oder in einer finanziellen Notlage sind,")
+    text = "Falls Sie Fragen zu den Rechnungspositionen haben oder in einer finanziellen Notlage sind, bitten wir Sie, sich umgehend mit uns in Verbindung zu setzen. Wir sind gerne bereit, mit Ihnen eine Ratenzahlungsvereinbarung zu treffen."
+    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
     info_y -= 12
-    c.drawString(left_margin, info_y, "bitten wir Sie, sich umgehend mit uns in Verbindung zu setzen. Wir sind gerne bereit, mit")
-    info_y -= 12
-    c.drawString(left_margin, info_y, "Ihnen eine Ratenzahlungsvereinbarung zu treffen.")
-    info_y -= 20
 
     # Paragraph 3
-    c.drawString(left_margin, info_y, "Bitte beachten Sie, dass bei Nichtzahlung weitere Kosten auf Sie zukommen können,")
+    text = "Bitte beachten Sie, dass bei Nichtzahlung weitere Kosten auf Sie zukommen können, einschließlich Zinsen, Anwaltskosten und Gerichtsgebühren. Diese können den ursprünglichen Rechnungsbetrag erheblich erhöhen."
+    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
     info_y -= 12
-    c.drawString(left_margin, info_y, "einschließlich Zinsen, Anwaltskosten und Gerichtsgebühren. Diese können den")
-    info_y -= 12
-    c.drawString(left_margin, info_y, "ursprünglichen Rechnungsbetrag erheblich erhöhen.")
-    info_y -= 20
 
     # Paragraph 4
-    c.drawString(left_margin, info_y, "Wir möchten Sie darauf hinweisen, dass ein gerichtliches Mahnverfahren auch negative")
+    text = "Wir möchten Sie darauf hinweisen, dass ein gerichtliches Mahnverfahren auch negative Auswirkungen auf Ihre Bonität haben kann. Dies kann zukünftige Geschäftsbeziehungen und Kreditwürdigkeitsprüfungen beeinflussen."
+    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
     info_y -= 12
-    c.drawString(left_margin, info_y, "Auswirkungen auf Ihre Bonität haben kann. Dies kann zukünftige Geschäftsbeziehungen und")
-    info_y -= 12
-    c.drawString(left_margin, info_y, "Kreditwürdigkeitsprüfungen beeinflussen.")
-    info_y -= 20
 
     # Paragraph 5
-    c.drawString(left_margin, info_y, "Ihre Gesundheit liegt uns am Herzen, und wir möchten unsere gute Geschäftsbeziehung")
-    info_y -= 12
-    c.drawString(left_margin, info_y, "fortführen. Daher bitten wir Sie eindringlich, den offenen Betrag zu begleichen oder sich mit")
-    info_y -= 12
-    c.drawString(left_margin, info_y, "uns in Verbindung zu setzen, um eine Lösung zu finden.")
+    text = "Ihre Gesundheit liegt uns am Herzen, und wir möchten unsere gute Geschäftsbeziehung fortführen. Daher bitten wir Sie eindringlich, den offenen Betrag zu begleichen oder sich mit uns in Verbindung zu setzen, um eine Lösung zu finden."
+    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
 
     # Footer on page 2
+    footer_y = 80
     c.setFont("Helvetica", 8)
     c.line(left_margin, footer_y + 15, width - 25 * mm, footer_y + 15)
     c.drawString(left_margin, footer_y, "Bankverbindung: Sparkasse Worms-Alzey-Ried, IBAN: DE51 5535 0010 0033 7173 83, BIC: MALADE51WOR")
-    c.drawString(left_margin, footer_y - 10, "Inhaber/in: Matthias Blüm")
-    c.drawString(left_margin, footer_y - 20, "Gerichtsstand: Alzey | HRA-Nummer: 31710")
+    c.drawString(left_margin, footer_y - 10, "Inhaber: Matthias Blüm")
+    c.drawString(left_margin, footer_y - 20, "Gerichtsstand: Mainz | HRA-Nummer: 31710")
 
     c.save()
     buffer.seek(0)
@@ -775,24 +842,27 @@ def create_reminder_pdf(
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
 
-    # Pharmacy info (top right)
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(360, height - 50, "Apotheke am Damm")
-    c.setFont("Helvetica", 10)
-    c.drawString(360, height - 65, "Inh. Matthias Blüm, e.K.")
-    c.drawString(360, height - 80, "Am Damm 17")
-    c.drawString(360, height - 95, "55232 Alzey")
-    c.drawString(360, height - 110, "Tel.: 06731-548846")
-    c.drawString(360, height - 125, "info@apothekeamdamm.de")
-
     # Return address (small, above recipient address)
+    # DIN 5008: starts at 44mm from top, max height 5mm
+    # ADJUSTED: +5mm right, +4mm down
     left_margin = 25 * mm
-    return_address_y = height - (20 * mm)
+    return_address_y = height - (48 * mm)
+
+    # Pharmacy info (right side, starting at 48mm)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(360, return_address_y, "Apotheke am Damm")
+    c.setFont("Helvetica", 10)
+    c.drawString(360, return_address_y - 15, "Inh. Matthias Blüm, e.K.")
+    c.drawString(360, return_address_y - 30, "Am Damm 17")
+    c.drawString(360, return_address_y - 45, "55232 Alzey")
+    c.drawString(360, return_address_y - 60, "Tel.: 06731-548846")
+    c.drawString(360, return_address_y - 75, "info@apothekeamdamm.de")
     c.setFont("Helvetica", 8)
     c.drawString(left_margin, return_address_y, "Apotheke am Damm, Am Damm 17, 55232 Alzey")
 
     # Recipient address (must be between 66mm and 88mm from top - DIN 5008)
-    recipient_y_start = height - (66 * mm)
+    # ADJUSTED: +10mm down, +5mm right
+    recipient_y_start = height - (76 * mm)
     c.setFont("Helvetica", 11)
 
     # Parse address
@@ -923,6 +993,9 @@ def create_reminder_pdf(
     c.drawRightString(col3_x, content_y, f"{total_amount:.2f} €")
 
     # Bank details
+    # Check if we need a page break (bank details + possible level 2 text + closing ~ 200 pixels)
+    content_y = check_page_break(c, content_y, 200, left_margin, width, height, is_reminder=True)
+
     content_y -= 20
     c.setFont("Helvetica", 10)
     c.drawString(left_margin, content_y, "Bitte überweisen Sie den Betrag auf folgendes Konto:")
@@ -974,75 +1047,57 @@ def create_reminder_pdf(
     c.drawString(left_margin, content_y, "Apotheke am Damm")
 
     # Footer
-    footer_y = 80
-    c.setFont("Helvetica", 7)
-    c.line(left_margin, footer_y + 15, width - 25 * mm, footer_y + 15)
-    c.drawString(left_margin, footer_y, "Apotheke am Damm | Inh. Matthias Blüm, e.K. | Am Damm 17 | 55232 Alzey")
-    c.drawString(left_margin, footer_y - 9, "Handelsregister: HRA 31710, Registergericht: Amtsgericht Mainz | USt-IdNr. DE814983365")
+    draw_reminder_footer(c, left_margin, width, 80)
 
     # Page 2: Additional information
     c.showPage()
 
-    # Pharmacy info (top right) on page 2
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(360, height - 50, "Apotheke am Damm")
-    c.setFont("Helvetica", 10)
-    c.drawString(360, height - 65, "Inh. Matthias Blüm, e.K.")
-    c.drawString(360, height - 80, "Am Damm 17")
-    c.drawString(360, height - 95, "55232 Alzey")
-    c.drawString(360, height - 110, "Tel.: 06731-548846")
-    c.drawString(360, height - 125, "info@apothekeamdamm.de")
+    # Co-payment exemption notice (at top of page 2)
+    info_y = height - 150
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(left_margin, info_y, "Hinweis bei Zuzahlungsbefreiung:")
+
+    info_y -= 15
+    text_width = width - left_margin - 25 * mm
+    text = ("Trotz Befreiung von der Rezeptgebühr ist der Rechnungsbetrag fällig, da das Rezept/die Rezepte vom Arzt als "
+            "\"gebührenpflichtig\" gekennzeichnet wurde(n). Mit dieser Rechnung und einem Zahlungsnachweis erhalten Sie den "
+            "Betrag von Ihrer Krankenkasse erstattet. Bitte reichen Sie uns ebenfalls eine Kopie des Befreiungsausweises ein. "
+            "Für Rückfragen helfen wir Ihnen natürlich gerne weiter.")
+    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
 
     # Title
-    info_y = height - 150
+    info_y -= 30
     c.setFont("Helvetica-Bold", 12)
     c.drawString(left_margin, info_y, "Weitere Informationen und Hinweise")
 
     info_y -= 25
-    c.setFont("Helvetica", 10)
 
     # Paragraph 1
-    c.drawString(left_margin, info_y, "Sollten Sie den Betrag bereits überwiesen haben, betrachten Sie dieses Schreiben bitte als")
+    text = "Sollten Sie den Betrag bereits überwiesen haben, betrachten Sie dieses Schreiben bitte als gegenstandslos. In diesem Fall bitten wir um Entschuldigung für die Unannehmlichkeiten."
+    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
     info_y -= 12
-    c.drawString(left_margin, info_y, "gegenstandslos. In diesem Fall bitten wir um Entschuldigung für die Unannehmlichkeiten.")
-    info_y -= 20
 
     # Paragraph 2
-    c.drawString(left_margin, info_y, "Falls Sie Fragen zu den Rechnungspositionen haben oder in einer finanziellen Notlage sind,")
+    text = "Falls Sie Fragen zu den Rechnungspositionen haben oder in einer finanziellen Notlage sind, bitten wir Sie, sich umgehend mit uns in Verbindung zu setzen. Wir sind gerne bereit, mit Ihnen eine Ratenzahlungsvereinbarung zu treffen."
+    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
     info_y -= 12
-    c.drawString(left_margin, info_y, "bitten wir Sie, sich umgehend mit uns in Verbindung zu setzen. Wir sind gerne bereit, mit")
-    info_y -= 12
-    c.drawString(left_margin, info_y, "Ihnen eine Ratenzahlungsvereinbarung zu treffen.")
-    info_y -= 20
 
     # Paragraph 3
-    c.drawString(left_margin, info_y, "Bitte beachten Sie, dass bei Nichtzahlung weitere Kosten auf Sie zukommen können,")
+    text = "Bitte beachten Sie, dass bei Nichtzahlung weitere Kosten auf Sie zukommen können, einschließlich Zinsen, Anwaltskosten und Gerichtsgebühren. Diese können den ursprünglichen Rechnungsbetrag erheblich erhöhen."
+    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
     info_y -= 12
-    c.drawString(left_margin, info_y, "einschließlich Zinsen, Anwaltskosten und Gerichtsgebühren. Diese können den")
-    info_y -= 12
-    c.drawString(left_margin, info_y, "ursprünglichen Rechnungsbetrag erheblich erhöhen.")
-    info_y -= 20
 
     # Paragraph 4
-    c.drawString(left_margin, info_y, "Wir möchten Sie darauf hinweisen, dass ein gerichtliches Mahnverfahren auch negative")
+    text = "Wir möchten Sie darauf hinweisen, dass ein gerichtliches Mahnverfahren auch negative Auswirkungen auf Ihre Bonität haben kann. Dies kann zukünftige Geschäftsbeziehungen und Kreditwürdigkeitsprüfungen beeinflussen."
+    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
     info_y -= 12
-    c.drawString(left_margin, info_y, "Auswirkungen auf Ihre Bonität haben kann. Dies kann zukünftige Geschäftsbeziehungen und")
-    info_y -= 12
-    c.drawString(left_margin, info_y, "Kreditwürdigkeitsprüfungen beeinflussen.")
-    info_y -= 20
 
     # Paragraph 5
-    c.drawString(left_margin, info_y, "Ihre Gesundheit liegt uns am Herzen, und wir möchten unsere gute Geschäftsbeziehung")
-    info_y -= 12
-    c.drawString(left_margin, info_y, "fortführen. Daher bitten wir Sie eindringlich, den offenen Betrag zu begleichen oder sich mit")
-    info_y -= 12
-    c.drawString(left_margin, info_y, "uns in Verbindung zu setzen, um eine Lösung zu finden.")
+    text = "Ihre Gesundheit liegt uns am Herzen, und wir möchten unsere gute Geschäftsbeziehung fortführen. Daher bitten wir Sie eindringlich, den offenen Betrag zu begleichen oder sich mit uns in Verbindung zu setzen, um eine Lösung zu finden."
+    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
 
     # Footer on page 2
-    c.setFont("Helvetica", 7)
-    c.line(left_margin, footer_y + 15, width - 25 * mm, footer_y + 15)
-    c.drawString(left_margin, footer_y, "Apotheke am Damm | Inh. Matthias Blüm, e.K. | Am Damm 17 | 55232 Alzey")
-    c.drawString(left_margin, footer_y - 9, "Handelsregister: HRA 31710, Registergericht: Amtsgericht Mainz | USt-IdNr. DE814983365")
+    draw_reminder_footer(c, left_margin, width, 80)
 
     c.save()
     buffer.seek(0)
@@ -2725,6 +2780,34 @@ def create_app(config: Optional[dict] = None) -> Flask:
             logging.error(f"Error getting LetterXpress job {job_id}: {e}")
             return jsonify({"success": False, "error": str(e)}), 500
 
+    @app.route("/api/letterxpress/jobs/<int:job_id>", methods=["DELETE"])
+    def delete_letterxpress_job(job_id: int):
+        """Delete a draft LetterXpress print job."""
+        try:
+            lx_client = LetterXpressClient()
+            success = lx_client.delete_job(job_id)
+            return jsonify({
+                "success": success,
+                "message": f"Job {job_id} erfolgreich gelöscht"
+            })
+        except Exception as e:
+            logging.error(f"Error deleting LetterXpress job {job_id}: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/api/letterxpress/jobs/<int:job_id>/activate", methods=["PUT"])
+    def activate_letterxpress_job(job_id: int):
+        """Activate a draft LetterXpress print job (set to live)."""
+        try:
+            lx_client = LetterXpressClient()
+            success = lx_client.activate_job(job_id)
+            return jsonify({
+                "success": success,
+                "message": f"Job {job_id} erfolgreich aktiviert"
+            })
+        except Exception as e:
+            logging.error(f"Error activating LetterXpress job {job_id}: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
     @app.route("/api/letterxpress/price", methods=["POST"])
     def get_letterxpress_price():
         """Calculate price for a letter."""
@@ -2932,6 +3015,165 @@ def create_app(config: Optional[dict] = None) -> Flask:
             logging.error(f"Error in send_via_letterxpress: {e}")
             return jsonify({"success": False, "error": str(e)}), 500
 
+    @app.route("/api/send-letterxpress-reminders", methods=["POST"])
+    def send_reminders_via_letterxpress():
+        """Send reminders (Mahnungen) via LetterXpress API."""
+        try:
+            data = request.json
+            if not data:
+                return jsonify({"success": False, "error": "Keine Daten übermittelt"}), 400
+
+            # Get list of relative paths to PDFs
+            pdf_paths = data.get("pdf_paths", [])
+            if not pdf_paths:
+                return jsonify({"success": False, "error": "Keine PDFs ausgewählt"}), 400
+
+            # Get LetterXpress options from request (with defaults)
+            color = data.get("color", "1")  # Default: black/white printing
+            print_mode = data.get("mode", "duplex")  # Default: double-sided
+            shipping = data.get("shipping", "national")  # Default: Germany
+            registered = data.get("registered")  # Default: None (no registered mail)
+            api_mode = data.get("api_mode")  # Optional: override API mode (test/live)
+
+            # Validate options
+            if color not in ["1", "4"]:
+                return jsonify({"success": False, "error": "Ungültige Farboption"}), 400
+            if print_mode not in ["simplex", "duplex"]:
+                return jsonify({"success": False, "error": "Ungültiger Druckmodus"}), 400
+            if shipping not in ["national", "international"]:
+                return jsonify({"success": False, "error": "Ungültige Versandart"}), 400
+            if registered and registered not in ["r1", "r2"]:
+                return jsonify({"success": False, "error": "Ungültige Einschreiben-Option"}), 400
+            if api_mode and api_mode not in ["test", "live"]:
+                return jsonify({"success": False, "error": "Ungültiger API-Modus"}), 400
+
+            # Initialize LetterXpress client
+            try:
+                # Use api_mode from request if provided, otherwise use default from env
+                lx_client = LetterXpressClient(mode=api_mode) if api_mode else LetterXpressClient()
+                mode = lx_client.mode
+                logging.info(f"LetterXpress client initialized in {mode.upper()} mode for reminders")
+            except Exception as e:
+                logging.error(f"Failed to initialize LetterXpress client: {e}")
+                return jsonify({
+                    "success": False,
+                    "error": f"LetterXpress-Client konnte nicht initialisiert werden: {str(e)}"
+                }), 500
+
+            # Check balance first
+            try:
+                balance, currency = lx_client.check_balance()
+                logging.info(f"LetterXpress balance: {balance} {currency}")
+            except Exception as e:
+                logging.warning(f"Could not check balance: {e}")
+                balance, currency = None, None
+
+            # Convert relative paths to absolute paths
+            results = []
+            base_dir = BASE_DIR.resolve()
+
+            for relative_path in pdf_paths:
+                try:
+                    # Resolve the PDF path
+                    pdf_path = (base_dir / relative_path).resolve()
+
+                    # Security check: ensure path is within BASE_DIR
+                    try:
+                        pdf_path.relative_to(base_dir)
+                    except ValueError:
+                        results.append({
+                            "success": False,
+                            "filename": relative_path,
+                            "error": "Ungültiger Pfad"
+                        })
+                        continue
+
+                    # Check if file exists
+                    if not pdf_path.exists():
+                        results.append({
+                            "success": False,
+                            "filename": relative_path,
+                            "error": "Datei nicht gefunden"
+                        })
+                        continue
+
+                    # Extract customer name from filename for notice
+                    filename = pdf_path.name
+                    # Format: Mahnung_CustomerName_2025-01-15.pdf or similar
+                    customer_name = filename.replace(".pdf", "").split("_")[1] if "_" in filename else "Kunde"
+
+                    # Submit to LetterXpress
+                    logging.info(f"Submitting {filename} to LetterXpress ({mode.upper()} mode) - "
+                               f"color={color}, print_mode={print_mode}, shipping={shipping}, registered={registered}")
+                    result = lx_client.submit_letter(
+                        pdf_path=pdf_path,
+                        color=color,
+                        mode=print_mode,
+                        shipping=shipping,
+                        registered=registered,
+                        notice=f"Mahnung {customer_name}",
+                        filename_original=filename
+                    )
+
+                    job_id = result.get("id")
+                    price = result.get("price", 0.0)
+
+                    # Save to database
+                    try:
+                        with sqlite3.connect(app.config["DATABASE"]) as db_conn:
+                            db_conn.execute(
+                                """
+                                INSERT OR REPLACE INTO mahnungen_letterxpress
+                                (filename, pdf_path, letterxpress_job_id, mode, price, customer_name, submitted_at)
+                                VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+                                """,
+                                (filename, relative_path, job_id, mode, price, customer_name)
+                            )
+                            db_conn.commit()
+                            logging.info(f"Saved LetterXpress job {job_id} for {filename} to database")
+                    except Exception as db_err:
+                        logging.error(f"Failed to save job to database: {db_err}")
+
+                    results.append({
+                        "success": True,
+                        "filename": filename,
+                        "job_id": job_id,
+                        "price": price,
+                        "mode": mode
+                    })
+
+                    logging.info(f"Successfully submitted {filename} (Job ID: {job_id}, Price: {price} EUR)")
+
+                except Exception as e:
+                    logging.error(f"Failed to submit {relative_path}: {e}")
+                    results.append({
+                        "success": False,
+                        "filename": relative_path,
+                        "error": str(e)
+                    })
+
+            # Calculate statistics
+            success_count = sum(1 for r in results if r["success"])
+            total_price = sum(r.get("price", 0.0) for r in results if r["success"])
+
+            return jsonify({
+                "success": True,
+                "mode": mode,
+                "balance": balance,
+                "currency": currency,
+                "results": results,
+                "statistics": {
+                    "total": len(results),
+                    "successful": success_count,
+                    "failed": len(results) - success_count,
+                    "total_price": total_price
+                }
+            })
+
+        except Exception as e:
+            logging.error(f"Error in send_reminders_via_letterxpress: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
     @app.route("/pdf/<path:relative_path>")
     def serve_pdf(relative_path: str):
         # Allow serving PDFs from both Rechnungen and Sammelrechnungen folders
@@ -2963,7 +3205,7 @@ def fetch_invoices(
     database_path: str,
     query: str,
     limit: int,
-    time_filter: str = "all",
+    time_filter: str = "current_month",
     status_filter: str = "all",
     from_month: str = "",
     to_month: str = "",

@@ -338,6 +338,48 @@ class LetterXpressClient:
 
         raise Exception(f"Failed to list jobs: {response.get('message')}")
 
+    def delete_job(self, job_id: int) -> bool:
+        """
+        Delete a draft print job.
+
+        Args:
+            job_id: Job ID to delete
+
+        Returns:
+            True if successful
+
+        Raises:
+            Exception if job cannot be deleted
+        """
+        response = self._make_request("DELETE", f"/printjobs/{job_id}")
+
+        if response.get("status") == 200:
+            logger.info(f"Successfully deleted job {job_id}")
+            return True
+
+        raise Exception(f"Failed to delete job: {response.get('message')}")
+
+    def activate_job(self, job_id: int) -> bool:
+        """
+        Activate a draft job (set it to live/queue status).
+
+        Args:
+            job_id: Job ID to activate
+
+        Returns:
+            True if successful
+
+        Raises:
+            Exception if job cannot be activated
+        """
+        response = self._make_request("PUT", f"/printjobs/{job_id}/set")
+
+        if response.get("status") == 200:
+            logger.info(f"Successfully activated job {job_id}")
+            return True
+
+        raise Exception(f"Failed to activate job: {response.get('message')}")
+
 
 def main():
     """Test the LetterXpress client."""

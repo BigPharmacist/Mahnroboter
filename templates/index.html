@@ -9,8 +9,9 @@
     <p class="subtitle">Anzeige der zuletzt erfassten Rechnungen aus {{ limit }} Einträgen.</p>
   </header>
 
-  <section class="controls">
-    <form method="get" class="search-form">
+  <div class="scan-controls">
+    <button id="scan-button" class="scan-button">&#x1F50D; Neu Importieren</button>
+    <form method="get" class="search-form" style="display: inline-flex; align-items: center; gap: 0.5rem; margin-left: 1rem;">
       <label for="q">Suche</label>
       <input type="text" id="q" name="q" value="{{ query }}" placeholder="Name, Rechnungsnummer oder Adresse">
       <input type="hidden" name="grouped" value="{{ 'true' if grouped else 'false' }}">
@@ -21,7 +22,10 @@
       <a class="reset" href="{{ url_for('index', time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}">Suche zurücksetzen</a>
       {% endif %}
     </form>
+    <span id="scan-status" class="scan-status"></span>
+  </div>
 
+  <section class="controls">
     <div class="filter-grid">
       <!-- Zeitraum Buttons -->
       <div class="filter-row">
@@ -106,17 +110,6 @@
           </a>
         </div>
       </div>
-    </div>
-    <div class="summary">
-      <strong>{{ invoices|length }}</strong> Rechnung(en),
-      Summe <strong>{{ "%.2f"|format(total_amount) }} €</strong>
-    </div>
-    <div class="api-link">
-      <a href="{{ url_for('invoices_api', q=query, limit=limit, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, sort=sort_by, direction=sort_direction) }}">API (JSON)</a>
-    </div>
-    <div class="scan-controls">
-      <button id="scan-button" class="scan-button">&#x1F50D; Neu scannen</button>
-      <span id="scan-status" class="scan-status"></span>
     </div>
     <div class="action-buttons-container">
       <div class="action-buttons-grid">
