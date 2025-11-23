@@ -557,7 +557,7 @@ def log_invoice_event(
     Args:
         conn: Database connection
         invoice_id: ID of the invoice
-        event_type: Type of event (e.g., 'IMPORT', 'EMAIL_SENT', 'REMINDER_CREATED')
+        event_type: Type of event (e.g., 'IMPORT', 'EMAIL_SENT', 'REMINDER_CREATED', 'PAYMENT_RECEIVED')
         metadata: Optional dictionary with additional event details (will be stored as JSON)
     """
     import json
@@ -569,6 +569,101 @@ def log_invoice_event(
         """,
         (invoice_id, event_type, metadata_json)
     )
+
+
+def detect_and_log_payments(conn: sqlite3.Connection, current_snapshot_date: str) -> int:
+    """
+    Detect invoices that were paid (disappeared from the latest snapshot)
+    and log PAYMENT_RECEIVED events in the invoice history.
+
+    Compares the current snapshot with the previous one to find invoices
+    that are no longer present (indicating payment).
+
+    Args:
+        conn: Database connection
+        current_snapshot_date: The snapshot date just processed (YYYY-MM format)
+
+    Returns:
+        Number of newly detected payments
+    """
+    # Get current snapshot ID
+    current_snapshot = conn.execute(
+        "SELECT id FROM snapshots WHERE snapshot_date = ? ORDER BY id DESC LIMIT 1",
+        (current_snapshot_date,)
+    ).fetchone()
+
+    if not current_snapshot:
+        return 0
+
+    current_snapshot_id = current_snapshot[0]
+
+    # Get previous snapshot
+    previous_snapshot = conn.execute(
+        """
+        SELECT id, snapshot_date
+        FROM snapshots
+        WHERE snapshot_date < ?
+        ORDER BY snapshot_date DESC
+        LIMIT 1
+        """,
+        (current_snapshot_date,)
+    ).fetchone()
+
+    if not previous_snapshot:
+        # No previous snapshot to compare with
+        return 0
+
+    previous_snapshot_id = previous_snapshot[0]
+    previous_snapshot_date = previous_snapshot[1]
+
+    # Find invoices that were in previous snapshot but NOT in current snapshot
+    # and haven't been logged as paid yet
+    paid_invoices = conn.execute(
+        """
+        SELECT DISTINCT i.id, i.invoice_number, i.customer_name, i.amount_cents
+        FROM invoices i
+        JOIN invoice_snapshots isnap_prev ON i.id = isnap_prev.invoice_id
+        WHERE isnap_prev.snapshot_id = ?
+          AND NOT EXISTS (
+              SELECT 1 FROM invoice_snapshots isnap_curr
+              WHERE isnap_curr.invoice_id = i.id
+                AND isnap_curr.snapshot_id = ?
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM invoice_history ih
+              WHERE ih.invoice_id = i.id
+                AND ih.event_type = 'PAYMENT_RECEIVED'
+          )
+        """,
+        (previous_snapshot_id, current_snapshot_id)
+    ).fetchall()
+
+    # Log payment event for each paid invoice
+    count = 0
+    for invoice in paid_invoices:
+        invoice_id, invoice_number, customer_name, amount_cents = invoice
+        log_invoice_event(
+            conn,
+            invoice_id,
+            "PAYMENT_RECEIVED",
+            {
+                "amount": amount_cents / 100,
+                "last_seen_snapshot": previous_snapshot_date,
+                "paid_detected_at_snapshot": current_snapshot_date,
+                "invoice_number": invoice_number or "ohne Nummer",
+                "customer_name": customer_name
+            }
+        )
+        count += 1
+        logging.info(
+            "Zahlung erkannt: %s (%s) – %.2f € (zuletzt gesehen: %s)",
+            customer_name,
+            invoice_number or "ohne Nr.",
+            amount_cents / 100,
+            previous_snapshot_date
+        )
+
+    return count
 
 
 def storage_key(pdf_path: Path, root: Path) -> str:

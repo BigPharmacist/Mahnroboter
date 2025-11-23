@@ -50,6 +50,22 @@
   {% endif %}
 </section>
 
+<!-- Filter button for 2. Mahnung - show even when no invoices are visible -->
+{% if view == '2_mahnung' and stats.tab_counts['2_mahnung'] > 0 %}
+<section class="filter-controls">
+  <div class="collapse-controls">
+    <a href="{{ url_for('mahnungen', view='2_mahnung', show_uncollectible='true' if not show_uncollectible else 'false') }}"
+       class="btn btn-secondary btn-sm">
+      {% if show_uncollectible %}
+        ✓ Uneinbringbare Re. ausblenden
+      {% else %}
+        👁 Uneinbringbare Re. anzeigen
+      {% endif %}
+    </a>
+  </div>
+</section>
+{% endif %}
+
 {% if customer_groups %}
 <section class="customers-container">
   <div class="collapse-controls">
@@ -81,16 +97,6 @@
     <button class="btn btn-primary btn-sm" onclick="showLetterXpressDialog()" id="sendBtn" style="margin-left: 1rem;" disabled>
       📮 Per LetterXpress versenden
     </button>
-    {% endif %}
-    {% if view == '2_mahnung' %}
-    <a href="{{ url_for('mahnungen', view='2_mahnung', show_uncollectible='true' if not show_uncollectible else 'false') }}"
-       class="btn btn-secondary btn-sm" style="margin-left: 1rem;">
-      {% if show_uncollectible %}
-        ✓ Uneinbringbare Re. ausblenden
-      {% else %}
-        👁 Uneinbringbare Re. anzeigen
-      {% endif %}
-    </a>
     {% endif %}
   </div>
   {% for customer in customer_groups %}
@@ -1022,6 +1028,8 @@ document.addEventListener('DOMContentLoaded', function() {
   updatePDFSelectionCount();
 });
 
+const showUncollectibleInvoices = {{ 'true' if show_uncollectible else 'false' }};
+
 // Uncollectible Checkbox Logic
 (function() {
   const uncollectibleCheckboxes = document.querySelectorAll('.uncollectible-input');
@@ -1032,11 +1040,14 @@ document.addEventListener('DOMContentLoaded', function() {
       e.stopPropagation(); // Stop event from bubbling
 
       const invoiceId = this.getAttribute('data-invoice-id');
-      const currentStatus = this.checked;
-      const newStatus = !currentStatus;
+      // Note: this.checked already contains the NEW value after click!
+      // So we need to reverse the logic
+      const newStatus = this.checked;
+      const currentStatus = !newStatus;
 
       if (confirm(newStatus ? 'Diese Rechnung als uneinbringbar markieren?' : 'Diese Rechnung als einbringbar markieren?')) {
-        // Show loading state
+        // Optimistically reflect the new state so the user immediately sees the change
+        this.checked = newStatus;
         this.disabled = true;
 
         fetch(`/api/invoices/${invoiceId}/toggle-uncollectible`, {
@@ -1050,20 +1061,27 @@ document.addEventListener('DOMContentLoaded', function() {
           if (data.success) {
             // Update checkbox state
             this.checked = data.uncollectible;
-            // Reload page to update the invoice list
-            setTimeout(() => {
-              window.location.reload();
-            }, 100);
+            this.disabled = false;
+
+            // When the "uneinbringbar" filter is active, keep the row visible so the user sees the new state
+            if (!showUncollectibleInvoices && data.uncollectible) {
+              alert('Rechnung als uneinbringbar markiert. Sie wird beim nächsten Aktualisieren automatisch ausgeblendet.');
+            }
           } else {
             alert('Fehler: ' + (data.error || 'Unbekannter Fehler'));
+            this.checked = currentStatus;
             this.disabled = false;
           }
         })
         .catch(error => {
           console.error('Error toggling uncollectible status:', error);
           alert('Fehler beim Aktualisieren des Status.');
+          this.checked = currentStatus;
           this.disabled = false;
         });
+      } else {
+        // User canceled the action; keep the checkbox in its previous state
+        this.checked = currentStatus;
       }
     });
   });
@@ -1164,6 +1182,10 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 
 .customers-container {
+  margin: 1rem 0;
+}
+
+.filter-controls {
   margin: 1rem 0;
 }
 

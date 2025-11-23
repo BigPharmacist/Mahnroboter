@@ -745,6 +745,20 @@ def create_cover_letter_pdf(
         c.drawString(col1_x, content_y, "Summe offener Rechnungen:")
         c.drawRightString(col3_x, content_y, f"{total_older:.2f} €")
 
+    # Co-payment exemption notice (before closing)
+    content_y -= 25
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(left_margin, content_y, "Hinweis bei Zuzahlungsbefreiung:")
+
+    content_y -= 15
+    text_width = width - left_margin - 25 * mm
+    text = ("Trotz Befreiung von der Rezeptgebühr ist der Rechnungsbetrag fällig, da das Rezept/die Rezepte vom "
+            "Arzt als \"gebührenpflichtig\" gekennzeichnet wurde(n). Mit dieser Rechnung und einem "
+            "Zahlungsnachweis erhalten Sie den Betrag von Ihrer Krankenkasse erstattet. Bitte reichen Sie uns "
+            "ebenfalls eine Kopie des Befreiungsausweises ein. Für Rückfragen helfen wir Ihnen natürlich gerne "
+            "weiter.")
+    content_y = draw_justified_paragraph(c, text, left_margin, content_y, text_width, font_size=10)
+
     # Closing
     content_y -= 20
     c.setFont("Helvetica", 10)
@@ -758,61 +772,6 @@ def create_cover_letter_pdf(
 
     # Footer
     draw_footer(c, left_margin, width, 80)
-
-    # Page 2: Additional information
-    c.showPage()
-
-    # Co-payment exemption notice (at top of page 2)
-    info_y = height - 150
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(left_margin, info_y, "Hinweis bei Zuzahlungsbefreiung:")
-
-    info_y -= 15
-    text_width = width - left_margin - 25 * mm
-    text = ("Trotz Befreiung von der Rezeptgebühr ist der Rechnungsbetrag fällig, da das Rezept/die Rezepte vom Arzt als "
-            "\"gebührenpflichtig\" gekennzeichnet wurde(n). Mit dieser Rechnung und einem Zahlungsnachweis erhalten Sie den "
-            "Betrag von Ihrer Krankenkasse erstattet. Bitte reichen Sie uns ebenfalls eine Kopie des Befreiungsausweises ein. "
-            "Für Rückfragen helfen wir Ihnen natürlich gerne weiter.")
-    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
-
-    # Title
-    info_y -= 30
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(left_margin, info_y, "Weitere Informationen und Hinweise")
-
-    info_y -= 25
-
-    # Paragraph 1
-    text = "Sollten Sie den Betrag bereits überwiesen haben, betrachten Sie dieses Schreiben bitte als gegenstandslos. In diesem Fall bitten wir um Entschuldigung für die Unannehmlichkeiten."
-    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
-    info_y -= 12
-
-    # Paragraph 2
-    text = "Falls Sie Fragen zu den Rechnungspositionen haben oder in einer finanziellen Notlage sind, bitten wir Sie, sich umgehend mit uns in Verbindung zu setzen. Wir sind gerne bereit, mit Ihnen eine Ratenzahlungsvereinbarung zu treffen."
-    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
-    info_y -= 12
-
-    # Paragraph 3
-    text = "Bitte beachten Sie, dass bei Nichtzahlung weitere Kosten auf Sie zukommen können, einschließlich Zinsen, Anwaltskosten und Gerichtsgebühren. Diese können den ursprünglichen Rechnungsbetrag erheblich erhöhen."
-    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
-    info_y -= 12
-
-    # Paragraph 4
-    text = "Wir möchten Sie darauf hinweisen, dass ein gerichtliches Mahnverfahren auch negative Auswirkungen auf Ihre Bonität haben kann. Dies kann zukünftige Geschäftsbeziehungen und Kreditwürdigkeitsprüfungen beeinflussen."
-    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
-    info_y -= 12
-
-    # Paragraph 5
-    text = "Ihre Gesundheit liegt uns am Herzen, und wir möchten unsere gute Geschäftsbeziehung fortführen. Daher bitten wir Sie eindringlich, den offenen Betrag zu begleichen oder sich mit uns in Verbindung zu setzen, um eine Lösung zu finden."
-    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
-
-    # Footer on page 2
-    footer_y = 80
-    c.setFont("Helvetica", 8)
-    c.line(left_margin, footer_y + 15, width - 25 * mm, footer_y + 15)
-    c.drawString(left_margin, footer_y, "Bankverbindung: Sparkasse Worms-Alzey-Ried, IBAN: DE51 5535 0010 0033 7173 83, BIC: MALADE51WOR")
-    c.drawString(left_margin, footer_y - 10, "Inhaber: Matthias Blüm")
-    c.drawString(left_margin, footer_y - 20, "Gerichtsstand: Mainz | HRA-Nummer: 31710")
 
     c.save()
     buffer.seek(0)
@@ -1712,7 +1671,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
         # Separate time and status filters
         time_filter = request.args.get("time", "all")  # 'all', 'current_month', or 'custom'
         status_filter = request.args.get("status", "open")  # 'all', 'open', or 'paid'
-        email_filter = request.args.get("email", "all")  # 'all' or 'with_email'
+        email_filter = request.args.get("email", "all")  # 'all', 'with_email', or 'without_email'
+        uncollectible_filter = request.args.get("uncollectible", "hide")  # 'hide', 'show', or 'only'
 
         # Custom date range parameters (format: YYYY-MM)
         from_month = request.args.get("from_month", "")
@@ -1732,6 +1692,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
             from_month,
             to_month,
             email_filter,
+            uncollectible_filter,
             sort_by,
             sort_direction,
         )
@@ -1768,6 +1729,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 time_filter=time_filter,
                 status_filter=status_filter,
                 email_filter=email_filter,
+                uncollectible_filter=uncollectible_filter,
                 from_month=from_month,
                 to_month=to_month,
                 latest_snapshot=latest_snapshot,
@@ -1788,6 +1750,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 time_filter=time_filter,
                 status_filter=status_filter,
                 email_filter=email_filter,
+                uncollectible_filter=uncollectible_filter,
                 from_month=from_month,
                 to_month=to_month,
                 latest_snapshot=latest_snapshot,
@@ -1902,6 +1865,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
             from_month,
             to_month,
             email_filter,
+            uncollectible_filter,
             sort_by,
             sort_direction,
         )
@@ -1947,6 +1911,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
         new_count = 0
         errors = []
 
+        payments_detected = 0
         with sqlite3.connect(db_path) as conn:
             init_db(conn)
             for pdf_path in pdf_files:
@@ -1959,10 +1924,26 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     logging.error("Fehler beim Verarbeiten von %s: %s", pdf_path, exc)
             conn.commit()
 
+            # After scanning, detect and log payments for the latest snapshot
+            try:
+                from invoice_tracker import detect_and_log_payments
+                latest_snapshot = conn.execute(
+                    "SELECT snapshot_date FROM snapshots ORDER BY snapshot_date DESC LIMIT 1"
+                ).fetchone()
+
+                if latest_snapshot:
+                    payments_detected = detect_and_log_payments(conn, latest_snapshot[0])
+                    if payments_detected > 0:
+                        logging.info(f"Zahlungserkennung: {payments_detected} Rechnung(en) als bezahlt markiert")
+                conn.commit()
+            except Exception as e:
+                logging.error(f"Fehler bei Zahlungserkennung: {e}")
+
         return jsonify({
             "success": True,
             "new_invoices": new_count,
             "total_scanned": len(pdf_files),
+            "payments_detected": payments_detected,
             "errors": errors
         })
 
@@ -2018,6 +1999,22 @@ def create_app(config: Optional[dict] = None) -> Flask:
                             logging.error("Fehler beim Verarbeiten von %s: %s", pdf_path, exc)
                     conn.commit()
 
+                    # After scanning, detect and log payments for the latest snapshot
+                    try:
+                        from invoice_tracker import detect_and_log_payments
+                        latest_snapshot = conn.execute(
+                            "SELECT snapshot_date FROM snapshots ORDER BY snapshot_date DESC LIMIT 1"
+                        ).fetchone()
+
+                        if latest_snapshot:
+                            payments_detected = detect_and_log_payments(conn, latest_snapshot[0])
+                            if payments_detected > 0:
+                                yield f"data: {json.dumps({'type': 'info', 'message': f'{payments_detected} Zahlung(en) erkannt und in Historie eingetragen'})}\n\n"
+                                logging.info(f"Zahlungserkennung: {payments_detected} Rechnung(en) als bezahlt markiert")
+                        conn.commit()
+                    except Exception as e:
+                        logging.error(f"Fehler bei Zahlungserkennung: {e}")
+
                 # Send completion message
                 yield f"data: {json.dumps({'type': 'complete', 'success': new_count, 'skipped': skipped_count, 'failed': error_count, 'total': total_pdfs, 'errors': errors})}\n\n"
 
@@ -2037,10 +2034,11 @@ def create_app(config: Optional[dict] = None) -> Flask:
         time_filter = request.args.get("time", "all")
         status_filter = request.args.get("status", "open")
         email_filter = request.args.get("email", "all")
+        uncollectible_filter = request.args.get("uncollectible", "hide")
         from_month = request.args.get("from_month", "")
         to_month = request.args.get("to_month", "")
 
-        invoices = fetch_invoices(app.config["DATABASE"], query, limit, time_filter, status_filter, from_month, to_month, email_filter)
+        invoices = fetch_invoices(app.config["DATABASE"], query, limit, time_filter, status_filter, from_month, to_month, email_filter, uncollectible_filter)
 
         if not invoices:
             return jsonify({"error": "Keine Rechnungen zum Drucken gefunden"}), 404
@@ -2096,12 +2094,13 @@ def create_app(config: Optional[dict] = None) -> Flask:
         time_filter = request.args.get("time", "all")
         status_filter = request.args.get("status", "open")
         email_filter = request.args.get("email", "all")
+        uncollectible_filter = request.args.get("uncollectible", "hide")
         from_month = request.args.get("from_month", "")
         to_month = request.args.get("to_month", "")
 
         def generate():
             try:
-                invoices = fetch_invoices(app.config["DATABASE"], query, limit, time_filter, status_filter, from_month, to_month, email_filter)
+                invoices = fetch_invoices(app.config["DATABASE"], query, limit, time_filter, status_filter, from_month, to_month, email_filter, uncollectible_filter)
 
                 if not invoices:
                     yield f"data: {json.dumps({'type': 'error', 'message': 'Keine Rechnungen zum Versenden gefunden'})}\n\n"
@@ -2602,6 +2601,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
             from_month = request.args.get("from_month", "")
             to_month = request.args.get("to_month", "")
             email_filter = request.args.get("email", "all")
+            uncollectible_filter = request.args.get("uncollectible", "hide")
 
             # First, get invoices based on user filters to determine which customers to process
             filtered_invoices = fetch_invoices(
@@ -2612,7 +2612,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 status_filter,
                 from_month,
                 to_month,
-                email_filter
+                email_filter,
+                uncollectible_filter
             )
 
             if not filtered_invoices:
@@ -2631,7 +2632,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 "open",  # only open invoices
                 "",  # no from_month filter
                 "",  # no to_month filter
-                "all"  # all email statuses
+                "all",  # all email statuses
+                uncollectible_filter  # respect uncollectible filter
             )
 
             # Filter to only the customers we want to process
@@ -3443,6 +3445,7 @@ def fetch_invoices(
     from_month: str = "",
     to_month: str = "",
     email_filter: str = "all",
+    uncollectible_filter: str = "hide",
     sort_by: str = "date",
     sort_direction: str = "desc",
 ) -> List[InvoiceRow]:
@@ -3458,6 +3461,11 @@ def fetch_invoices(
     - 'all': All statuses
     - 'open': Invoice appears in the latest snapshot
     - 'paid': Invoice doesn't appear in latest snapshot but appeared in earlier ones
+
+    Uncollectible filter:
+    - 'hide': Hide uncollectible invoices (default)
+    - 'show': Show uncollectible invoices
+    - 'only': Show only uncollectible invoices
 
     Custom date range:
     - from_month: Start month in YYYY-MM format
@@ -3520,10 +3528,16 @@ def fetch_invoices(
             FROM invoice_status ist
             LEFT JOIN customer_details cd ON ist.customer_name = cd.customer_name
             WHERE 1=1
-              AND (ist.uncollectible IS NULL OR ist.uncollectible = 0)
         """
 
         params = [latest_snapshot]
+
+        # Apply uncollectible filter
+        if uncollectible_filter == "hide":
+            sql += " AND (ist.uncollectible IS NULL OR ist.uncollectible = 0)"
+        elif uncollectible_filter == "only":
+            sql += " AND ist.uncollectible = 1"
+        # If uncollectible_filter == "show", don't add any filter (show all)
 
         # Apply search filter
         if query:
@@ -3772,6 +3786,7 @@ def fetch_invoices_with_reminders(database_path: str, filter_reminded: Optional[
                     i.customer_name,
                     i.customer_address,
                     i.amount_cents,
+                    i.uncollectible,
                     MAX(s.snapshot_date) as last_seen_snapshot,
                     MIN(s.snapshot_date) as first_seen_snapshot,
                     CASE
@@ -3867,6 +3882,7 @@ def fetch_invoices_with_reminders(database_path: str, filter_reminded: Optional[
             last_seen_snapshot=row["last_seen_snapshot"],
             first_seen_snapshot=row["first_seen_snapshot"],
             file_path=row["file_path"] if "file_path" in row.keys() else None,
+            uncollectible=row["uncollectible"] if "uncollectible" in row.keys() and row["uncollectible"] is not None else 0,
             months_open=months_open,
             recommended_level=recommended_level,
             last_reminder_level=row["last_reminder_level"],

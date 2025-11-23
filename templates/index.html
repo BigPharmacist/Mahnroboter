@@ -19,7 +19,7 @@
       <input type="hidden" name="direction" value="{{ sort_direction }}">
       <button type="submit">Filtern</button>
       {% if query %}
-      <a class="reset" href="{{ url_for('index', time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}">Suche zurücksetzen</a>
+      <a class="reset" href="{{ url_for('index', time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, uncollectible=uncollectible_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}">Suche zurücksetzen</a>
       {% endif %}
     </form>
     <span id="scan-status" class="scan-status"></span>
@@ -31,11 +31,11 @@
       <div class="filter-row">
         <label class="filter-label">Zeitraum:</label>
         <div class="filter-buttons">
-          <a href="{{ url_for('index', q=query, time='all', status=status_filter, email=email_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
+          <a href="{{ url_for('index', q=query, time='all', status=status_filter, email=email_filter, uncollectible=uncollectible_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
              class="filter-btn {% if time_filter == 'all' %}active{% endif %}">
             📋 Alle Monate
           </a>
-          <a href="{{ url_for('index', q=query, time='current_month', status=status_filter, email=email_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
+          <a href="{{ url_for('index', q=query, time='current_month', status=status_filter, email=email_filter, uncollectible=uncollectible_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
              class="filter-btn {% if time_filter == 'current_month' %}active{% endif %}">
             {% if time_filter == 'current_month' and latest_snapshot %}
               📅 {{ latest_snapshot.split('-')[1] }}/{{ latest_snapshot.split('-')[0] }}
@@ -51,6 +51,7 @@
           <input type="hidden" name="time" value="custom">
           <input type="hidden" name="status" value="{{ status_filter }}">
           <input type="hidden" name="email" value="{{ email_filter }}">
+          <input type="hidden" name="uncollectible" value="{{ uncollectible_filter }}">
           <input type="hidden" name="grouped" value="{{ 'true' if grouped else 'false' }}">
           <input type="hidden" name="sort" value="{{ sort_by }}">
           <input type="hidden" name="direction" value="{{ sort_direction }}">
@@ -77,15 +78,15 @@
       <div class="filter-row">
         <label class="filter-label">Status:</label>
         <div class="filter-buttons">
-          <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status='all', email=email_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
+          <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status='all', email=email_filter, uncollectible=uncollectible_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
              class="filter-btn {% if status_filter == 'all' %}active{% endif %}">
             📋 Alle
           </a>
-          <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status='open', email=email_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
+          <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status='open', email=email_filter, uncollectible=uncollectible_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
              class="filter-btn {% if status_filter == 'open' %}active{% endif %}">
             ⚠ Nur Offene
           </a>
-          <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status='paid', email=email_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
+          <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status='paid', email=email_filter, uncollectible=uncollectible_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
              class="filter-btn {% if status_filter == 'paid' %}active{% endif %}">
             ✓ Nur Bezahlte
           </a>
@@ -96,17 +97,36 @@
       <div class="filter-row">
         <label class="filter-label">Email:</label>
         <div class="filter-buttons">
-          <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email='all', grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
+          <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email='all', uncollectible=uncollectible_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
              class="filter-btn {% if email_filter == 'all' %}active{% endif %}">
             📋 Alle
           </a>
-          <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email='with_email', grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
+          <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email='with_email', uncollectible=uncollectible_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
              class="filter-btn {% if email_filter == 'with_email' %}active{% endif %}">
             ✉ Mit Email
           </a>
-          <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email='without_email', grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
+          <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email='without_email', uncollectible=uncollectible_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
              class="filter-btn {% if email_filter == 'without_email' %}active{% endif %}">
             ✗ Ohne Email
+          </a>
+        </div>
+      </div>
+
+      <!-- Uncollectible Filter Buttons -->
+      <div class="filter-row">
+        <label class="filter-label">Uneinbringbar:</label>
+        <div class="filter-buttons">
+          <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, uncollectible='hide', grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
+             class="filter-btn {% if uncollectible_filter == 'hide' %}active{% endif %}">
+            🚫 Ausblenden
+          </a>
+          <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, uncollectible='show', grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
+             class="filter-btn {% if uncollectible_filter == 'show' %}active{% endif %}">
+            👁 Anzeigen
+          </a>
+          <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, uncollectible='only', grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
+             class="filter-btn {% if uncollectible_filter == 'only' %}active{% endif %}">
+            ⚠️ Nur Uneinbringbare
           </a>
         </div>
       </div>
@@ -202,42 +222,42 @@
             {% set is_date_sorted = sort_by == 'date' %}
             {% set date_next_dir = 'desc' if is_date_sorted and sort_direction == 'asc' else 'asc' %}
             <th class="sortable {% if is_date_sorted %}sort-{{ sort_direction }}{% endif %}">
-              <a href="{{ url_for('index', q=query, limit=limit, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, grouped='true' if grouped else 'false', sort='date', direction=date_next_dir) }}">
+              <a href="{{ url_for('index', q=query, limit=limit, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, uncollectible=uncollectible_filter, grouped='true' if grouped else 'false', sort='date', direction=date_next_dir) }}">
                 Datum <span class="sort-arrow"></span>
               </a>
             </th>
             {% set is_name_sorted = sort_by == 'name' %}
             {% set name_next_dir = 'desc' if is_name_sorted and sort_direction == 'asc' else 'asc' %}
             <th class="sortable {% if is_name_sorted %}sort-{{ sort_direction }}{% endif %}">
-              <a href="{{ url_for('index', q=query, limit=limit, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, grouped='true' if grouped else 'false', sort='name', direction=name_next_dir) }}">
+              <a href="{{ url_for('index', q=query, limit=limit, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, uncollectible=uncollectible_filter, grouped='true' if grouped else 'false', sort='name', direction=name_next_dir) }}">
                 Empfänger <span class="sort-arrow"></span>
               </a>
             </th>
             {% set is_address_sorted = sort_by == 'address' %}
             {% set address_next_dir = 'desc' if is_address_sorted and sort_direction == 'asc' else 'asc' %}
             <th class="sortable {% if is_address_sorted %}sort-{{ sort_direction }}{% endif %}">
-              <a href="{{ url_for('index', q=query, limit=limit, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, grouped='true' if grouped else 'false', sort='address', direction=address_next_dir) }}">
+              <a href="{{ url_for('index', q=query, limit=limit, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, uncollectible=uncollectible_filter, grouped='true' if grouped else 'false', sort='address', direction=address_next_dir) }}">
                 Adresse <span class="sort-arrow"></span>
               </a>
             </th>
             {% set is_number_sorted = sort_by == 'number' %}
             {% set number_next_dir = 'desc' if is_number_sorted and sort_direction == 'asc' else 'asc' %}
             <th class="sortable {% if is_number_sorted %}sort-{{ sort_direction }}{% endif %}">
-              <a href="{{ url_for('index', q=query, limit=limit, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, grouped='true' if grouped else 'false', sort='number', direction=number_next_dir) }}">
+              <a href="{{ url_for('index', q=query, limit=limit, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, uncollectible=uncollectible_filter, grouped='true' if grouped else 'false', sort='number', direction=number_next_dir) }}">
                 Rechnungsnr. <span class="sort-arrow"></span>
               </a>
             </th>
             {% set is_amount_sorted = sort_by == 'amount' %}
             {% set amount_next_dir = 'desc' if is_amount_sorted and sort_direction == 'asc' else 'asc' %}
             <th class="sortable {% if is_amount_sorted %}sort-{{ sort_direction }}{% endif %}">
-              <a href="{{ url_for('index', q=query, limit=limit, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, grouped='true' if grouped else 'false', sort='amount', direction=amount_next_dir) }}">
+              <a href="{{ url_for('index', q=query, limit=limit, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, uncollectible=uncollectible_filter, grouped='true' if grouped else 'false', sort='amount', direction=amount_next_dir) }}">
                 Betrag <span class="sort-arrow"></span>
               </a>
             </th>
             {% set is_status_sorted = sort_by == 'status' %}
             {% set status_next_dir = 'desc' if is_status_sorted and sort_direction == 'asc' else 'asc' %}
             <th class="sortable {% if is_status_sorted %}sort-{{ sort_direction }}{% endif %}">
-              <a href="{{ url_for('index', q=query, limit=limit, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, grouped='true' if grouped else 'false', sort='status', direction=status_next_dir) }}">
+              <a href="{{ url_for('index', q=query, limit=limit, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, uncollectible=uncollectible_filter, grouped='true' if grouped else 'false', sort='status', direction=status_next_dir) }}">
                 Status <span class="sort-arrow"></span>
               </a>
             </th>
