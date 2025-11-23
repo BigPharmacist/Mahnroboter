@@ -538,6 +538,9 @@
 
     // Collective invoices button handler
     document.getElementById('collective-button').addEventListener('click', async function() {
+      // Ask if SEPA mandate should be included
+      const includeSepa = confirm('Soll ein SEPA-Lastschriftmandat beigefügt werden?\n\n(Wird automatisch übersprungen für Kunden mit aktiviertem Bankeinzug)');
+
       if (!confirm('Möchten Sie wirklich Sammelrechnungen für alle Rechnungsempfänger erzeugen?')) {
         return;
       }
@@ -553,6 +556,10 @@
       try {
         const currentUrl = new URL(window.location.href);
         const params = new URLSearchParams(currentUrl.search);
+
+        // Add include_sepa parameter
+        params.set('include_sepa', includeSepa ? 'true' : 'false');
+
         const apiUrl = new URL('/api/generate-collective-invoices', window.location.origin);
         apiUrl.search = params.toString();
 

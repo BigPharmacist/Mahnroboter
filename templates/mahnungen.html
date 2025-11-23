@@ -50,11 +50,22 @@
   {% endif %}
 </section>
 
-<!-- Filter button for 2. Mahnung - show even when no invoices are visible -->
-{% if view == '2_mahnung' and stats.tab_counts['2_mahnung'] > 0 %}
+<!-- Filter buttons -->
 <section class="filter-controls">
   <div class="collapse-controls">
-    <a href="{{ url_for('mahnungen', view='2_mahnung', show_uncollectible='true' if not show_uncollectible else 'false') }}"
+    <!-- Never remind filter button - always shown -->
+    <a href="{{ url_for('mahnungen', view=view, show_uncollectible=show_uncollectible, hide_never_remind='false' if hide_never_remind else 'true') }}"
+       class="btn btn-secondary btn-sm">
+      {% if hide_never_remind %}
+        👁 "Nie mahnen"-Kunden anzeigen
+      {% else %}
+        ✓ "Nie mahnen"-Kunden ausblenden
+      {% endif %}
+    </a>
+
+    <!-- Uncollectible filter button - only for 2. Mahnung -->
+    {% if view == '2_mahnung' and stats.tab_counts['2_mahnung'] > 0 %}
+    <a href="{{ url_for('mahnungen', view='2_mahnung', show_uncollectible='true' if not show_uncollectible else 'false', hide_never_remind=hide_never_remind) }}"
        class="btn btn-secondary btn-sm">
       {% if show_uncollectible %}
         ✓ Uneinbringbare Re. ausblenden
@@ -62,9 +73,9 @@
         👁 Uneinbringbare Re. anzeigen
       {% endif %}
     </a>
+    {% endif %}
   </div>
 </section>
-{% endif %}
 
 {% if customer_groups %}
 <section class="customers-container">

@@ -944,6 +944,20 @@ def create_reminder_pdf(
         total_amount += inv['amount']
         content_y -= 12
 
+    # Add reminder fees (Mahngebühren) if applicable
+    reminder_fee = 0.0
+    if reminder_level == 1:
+        reminder_fee = 5.0  # 5€ for 1. Mahnung (from Zahlungserinnerung)
+    elif reminder_level == 2:
+        reminder_fee = 10.0  # 10€ for 2. Mahnung (from 1. Mahnung)
+
+    if reminder_fee > 0:
+        c.drawString(col1_x, content_y, "Mahngebühren")
+        c.drawString(col2_x, content_y, "")
+        c.drawRightString(col3_x, content_y, f"{reminder_fee:.2f} €")
+        total_amount += reminder_fee
+        content_y -= 12
+
     # Total line
     content_y -= 2
     c.line(left_margin + 10, content_y, col3_x, content_y)
@@ -1058,6 +1072,175 @@ def create_reminder_pdf(
 
     # Footer on page 2
     draw_reminder_footer(c, left_margin, width, 80)
+
+    c.save()
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def create_sepa_mandate_pdf(
+    customer_name: str,
+    customer_address: str
+) -> bytes:
+    """
+    Create a SEPA-Lastschriftmandat PDF with customer data filled in.
+
+    Args:
+        customer_name: Name of the customer
+        customer_address: Full address of the customer
+
+    Returns:
+        PDF bytes
+    """
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+
+    # Parse customer address
+    address_lines = customer_address.split('\n') if '\n' in customer_address else customer_address.split(',')
+    address_lines = [line.strip() for line in address_lines if line.strip()]
+
+    # Extract street and city from address
+    street = address_lines[0] if len(address_lines) > 0 else ""
+    city = address_lines[1] if len(address_lines) > 1 else ""
+
+    # Startposition oben
+    y_pos = height - 40*mm
+
+    # Überschrift - SEPA-Basis-Lastschriftmandat
+    c.setFont("Helvetica-Bold", 12)
+    c.rect(20*mm, y_pos - 8*mm, 170*mm, 10*mm, stroke=1, fill=0)
+    c.drawString(22*mm, y_pos - 5*mm, "SEPA-Basis-Lastschriftmandat")
+
+    y_pos -= 15*mm
+
+    # Zahlungsempfänger Box
+    c.setFont("Helvetica", 7)
+    c.drawString(20*mm, y_pos, "Name und Anschrift des Zahlungsempfängers (Gläubiger)")
+
+    y_pos -= 7*mm
+    c.rect(20*mm, y_pos - 20*mm, 90*mm, 25*mm, stroke=1, fill=0)
+
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(22*mm, y_pos - 5*mm, "Apotheke am Damm")
+    c.setFont("Helvetica", 10)
+    c.drawString(22*mm, y_pos - 10*mm, "Am Damm 17")
+    c.drawString(22*mm, y_pos - 15*mm, "55232 Alzey")
+
+    y_pos -= 28*mm
+
+    # Gläubiger-ID und Mandatsreferenz
+    c.rect(20*mm, y_pos - 8*mm, 90*mm, 10*mm, stroke=1, fill=0)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(22*mm, y_pos - 5*mm, "DE45ZZZ00002778112")
+
+    c.rect(112*mm, y_pos - 8*mm, 78*mm, 10*mm, stroke=1, fill=0)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(114*mm, y_pos - 5*mm, "Wird separat mitgeteilt!")
+
+    c.setFont("Helvetica", 6)
+    c.drawString(22*mm, y_pos - 11*mm, "Gläubiger-Identifikationsnummer")
+    c.drawString(114*mm, y_pos - 11*mm, "Mandatsreferenz")
+
+    y_pos -= 18*mm
+
+    # Ermächtigungstext
+    c.setFont("Helvetica", 7)
+    text_de = [
+        "Ich ermächtige (Wir ermächtigen) die Apotheke am Damm,",
+        "Zahlungen von meinem (unserem) Konto mittels Lastschrift",
+        "einzuziehen. Zugleich weise ich mein (weisen wir unser)",
+        "Kreditinstitut an, die von der Apotheke am Damm auf mein",
+        "(unser) Konto gezogenen Lastschriften einzulösen.",
+        "",
+        "Hinweis: Ich kann (wir können) innerhalb von acht",
+        "Wochen, beginnend mit dem Belastungsdatum, die",
+        "Erstattung des belasteten Betrages verlangen. Es gelten",
+        "dabei die mit meinem (unserem) Kreditinstitut vereinbarten",
+        "Bedingungen."
+    ]
+
+    y_text = y_pos
+    for line in text_de:
+        c.drawString(22*mm, y_text, line)
+        y_text -= 3.5*mm
+
+    y_pos -= 45*mm
+
+    # Checkboxen
+    c.setFont("Helvetica", 8)
+    # Wiederkehrende Zahlung
+    c.rect(22*mm, y_pos - 3*mm, 4*mm, 4*mm, stroke=1, fill=0)
+    c.drawString(28*mm, y_pos - 2*mm, "Wiederkehrende Zahlung")
+
+    # Einmalige Zahlung
+    c.rect(112*mm, y_pos - 3*mm, 4*mm, 4*mm, stroke=1, fill=0)
+    c.drawString(118*mm, y_pos - 2*mm, "Einmalige Zahlung")
+
+    y_pos -= 10*mm
+
+    # Zahlungspflichtiger Felder (mit Daten gefüllt)
+    c.setFont("Helvetica", 7)
+
+    # Name
+    c.drawString(20*mm, y_pos, "Zahlungspflichtiger")
+    y_pos -= 3*mm
+    c.rect(20*mm, y_pos - 5*mm, 170*mm, 7*mm, stroke=1, fill=0)
+    c.setFont("Helvetica", 10)
+    c.drawString(22*mm, y_pos - 3.5*mm, customer_name)
+    c.setFont("Helvetica", 7)
+    y_pos -= 10*mm
+
+    # Straße und Hausnummer
+    c.drawString(20*mm, y_pos, "Straße und Hausnummer")
+    y_pos -= 3*mm
+    c.rect(20*mm, y_pos - 5*mm, 170*mm, 7*mm, stroke=1, fill=0)
+    c.setFont("Helvetica", 10)
+    c.drawString(22*mm, y_pos - 3.5*mm, street)
+    c.setFont("Helvetica", 7)
+    y_pos -= 10*mm
+
+    # PLZ und Ort
+    c.drawString(20*mm, y_pos, "PLZ und Ort")
+    y_pos -= 3*mm
+    c.rect(20*mm, y_pos - 5*mm, 170*mm, 7*mm, stroke=1, fill=0)
+    c.setFont("Helvetica", 10)
+    c.drawString(22*mm, y_pos - 3.5*mm, city)
+    c.setFont("Helvetica", 7)
+    y_pos -= 10*mm
+
+    # Land
+    c.drawString(20*mm, y_pos, "Land")
+    y_pos -= 3*mm
+    c.rect(20*mm, y_pos - 5*mm, 170*mm, 7*mm, stroke=1, fill=0)
+    y_pos -= 10*mm
+
+    # IBAN
+    c.drawString(20*mm, y_pos, "IBAN")
+    y_pos -= 3*mm
+    c.rect(20*mm, y_pos - 5*mm, 170*mm, 7*mm, stroke=1, fill=0)
+    y_pos -= 10*mm
+
+    # SWIFT BIC
+    c.drawString(20*mm, y_pos, "SWIFT BIC")
+    y_pos -= 3*mm
+    c.rect(20*mm, y_pos - 5*mm, 170*mm, 7*mm, stroke=1, fill=0)
+    y_pos -= 20*mm
+
+    # Unterschriftenbereich
+    c.setFont("Helvetica", 7)
+
+    # Ort
+    c.line(20*mm, y_pos, 70*mm, y_pos)
+    c.drawString(20*mm, y_pos - 3*mm, "Ort")
+
+    # Datum
+    c.line(90*mm, y_pos, 125*mm, y_pos)
+    c.drawString(90*mm, y_pos - 3*mm, "Datum")
+
+    # Unterschrift
+    c.line(140*mm, y_pos, 190*mm, y_pos)
+    c.drawString(140*mm, y_pos - 3*mm, "Unterschrift(en)")
 
     c.save()
     buffer.seek(0)
@@ -1421,12 +1604,13 @@ def create_app(config: Optional[dict] = None) -> Flask:
         """Mahnungen overview page with 4 tabs by reminder status."""
         view = request.args.get("view", "unbemahnt")  # 'unbemahnt', 'zahlungserinnerung', '1_mahnung', '2_mahnung'
         show_uncollectible = request.args.get("show_uncollectible", "false").lower() == "true"
+        hide_never_remind = request.args.get("hide_never_remind", "true").lower() == "true"  # Default: hide customers with never_remind=1
 
         # Fetch all invoices to calculate tab counts
-        all_unbemahnt = fetch_invoices_with_reminders(app.config["DATABASE"], filter_reminded=False)
+        all_unbemahnt = fetch_invoices_with_reminders(app.config["DATABASE"], filter_reminded=False, hide_never_remind=hide_never_remind)
         # Show ALL unbemahnt invoices (including those without recommendation)
         unbemahnt_invoices = all_unbemahnt
-        all_reminded = fetch_invoices_with_reminders(app.config["DATABASE"], filter_reminded=True)
+        all_reminded = fetch_invoices_with_reminders(app.config["DATABASE"], filter_reminded=True, hide_never_remind=hide_never_remind)
         zahlungserinnerung_invoices = [inv for inv in all_reminded if inv.last_reminder_level == 0]
         mahnung_1_invoices = [inv for inv in all_reminded if inv.last_reminder_level == 1]
         mahnung_2_invoices_all = [inv for inv in all_reminded if inv.last_reminder_level == 2]
@@ -1533,7 +1717,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
             customer_groups=grouped_invoices,
             view=view,
             stats=stats,
-            show_uncollectible=show_uncollectible
+            show_uncollectible=show_uncollectible,
+            hide_never_remind=hide_never_remind
         )
 
     @app.route("/vorlagen")
@@ -1669,7 +1854,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
         grouped = request.args.get("grouped", "").lower() == "true"
 
         # Separate time and status filters
-        time_filter = request.args.get("time", "all")  # 'all', 'current_month', or 'custom'
+        time_filter = request.args.get("time", "current_month")  # 'all', 'current_month', or 'custom'
         status_filter = request.args.get("status", "open")  # 'all', 'open', or 'paid'
         email_filter = request.args.get("email", "all")  # 'all', 'with_email', or 'without_email'
         uncollectible_filter = request.args.get("uncollectible", "hide")  # 'hide', 'show', or 'only'
@@ -2602,6 +2787,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
             to_month = request.args.get("to_month", "")
             email_filter = request.args.get("email", "all")
             uncollectible_filter = request.args.get("uncollectible", "hide")
+            include_sepa = request.args.get("include_sepa", "false").lower() == "true"
 
             # First, get invoices based on user filters to determine which customers to process
             filtered_invoices = fetch_invoices(
@@ -2671,12 +2857,13 @@ def create_app(config: Optional[dict] = None) -> Flask:
                         else:
                             older_invoices.append(inv)
 
-                    # Get customer salutation and address
+                    # Get customer salutation, address, and bank debit status
                     customer_row = conn.execute(
-                        "SELECT salutation FROM customer_details WHERE customer_name = ?",
+                        "SELECT salutation, bank_debit FROM customer_details WHERE customer_name = ?",
                         (customer_name,)
                     ).fetchone()
                     salutation = customer_row["salutation"] if customer_row else None
+                    bank_debit = customer_row["bank_debit"] if customer_row and "bank_debit" in customer_row.keys() else 0
 
                     # Use the address from the first invoice
                     customer_address = current_month_invoices[0].customer_address if current_month_invoices else customer_invoice_list[0].customer_address
@@ -2729,6 +2916,16 @@ def create_app(config: Optional[dict] = None) -> Flask:
                                     current_month_count += 1
                                 except Exception as e:
                                     logging.error(f"Error reading invoice PDF {invoice_pdf_path}: {e}")
+
+                    # Add SEPA-Lastschriftmandat at the end if requested and customer doesn't have bank_debit enabled
+                    if include_sepa and not bank_debit:
+                        sepa_mandate_bytes = create_sepa_mandate_pdf(
+                            customer_name=customer_name,
+                            customer_address=customer_address
+                        )
+                        sepa_mandate_pdf = PdfReader(io.BytesIO(sepa_mandate_bytes))
+                        for page in sepa_mandate_pdf.pages:
+                            pdf_merger.add_page(page)
 
                     # Save combined PDF
                     # Sanitize filename
@@ -3754,7 +3951,7 @@ def fetch_all_customers(database_path: str) -> List[Dict]:
     return customers
 
 
-def fetch_invoices_with_reminders(database_path: str, filter_reminded: Optional[bool] = None) -> List[InvoiceWithReminder]:
+def fetch_invoices_with_reminders(database_path: str, filter_reminded: Optional[bool] = None, hide_never_remind: bool = True) -> List[InvoiceWithReminder]:
     """
     Fetch open invoices with their reminder information.
 
@@ -3762,6 +3959,7 @@ def fetch_invoices_with_reminders(database_path: str, filter_reminded: Optional[
         database_path: Path to the database
         filter_reminded: If True, only show invoices with reminders. If False, only show invoices without reminders.
                         If None, show all open invoices.
+        hide_never_remind: If True (default), hide customers with never_remind flag set. If False, show all.
     """
     with sqlite3.connect(database_path) as conn:
         conn.row_factory = sqlite3.Row
@@ -3843,15 +4041,21 @@ def fetch_invoices_with_reminders(database_path: str, filter_reminded: Optional[
                 lr.letterexpress_status,
                 lr.pdf_path as reminder_pdf_path,
                 CASE WHEN lr.invoice_id IS NOT NULL THEN 1 ELSE 0 END as has_reminders,
-                COALESCE(rgc.invoices_in_group, 1) as invoices_in_group
+                COALESCE(rgc.invoices_in_group, 1) as invoices_in_group,
+                COALESCE(cd.never_remind, 0) as never_remind
             FROM invoice_status ist
             LEFT JOIN invoice_files if ON ist.id = if.id
             LEFT JOIN last_reminder lr ON ist.id = lr.invoice_id
             LEFT JOIN reminder_group_counts rgc ON lr.pdf_path = rgc.pdf_path
+            LEFT JOIN customer_details cd ON ist.customer_name = cd.customer_name
             WHERE 1=1
         """
 
         params = [latest_snapshot]
+
+        # Apply never_remind filter (hide customers with never_remind=1 by default)
+        if hide_never_remind:
+            sql += " AND COALESCE(cd.never_remind, 0) = 0"
 
         # Apply reminder filter
         if filter_reminded is True:
