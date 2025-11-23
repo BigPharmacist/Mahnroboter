@@ -398,7 +398,8 @@
 
       // Get modal elements
       const modal = document.getElementById('email-progress-modal');
-      const summaryDiv = document.getElementById('email-summary');
+      const summaryText = document.getElementById('email-summary-text');
+      const spinner = document.getElementById('email-spinner');
       const progressBar = document.getElementById('email-progress-fill');
       const progressText = document.getElementById('email-progress-text');
       const progressLog = document.getElementById('email-progress-log');
@@ -409,7 +410,8 @@
       closeBtn.disabled = true;
 
       // Reset modal content
-      summaryDiv.textContent = 'Bereite E-Mail-Versand vor...';
+      summaryText.textContent = 'Bereite E-Mail-Versand vor...';
+      spinner.classList.remove('hidden');
       progressBar.style.width = '0%';
       progressText.textContent = '0%';
       progressLog.innerHTML = '';
@@ -450,8 +452,13 @@
           case 'summary':
             totalGroups = data.total_groups;
             totalInvoices = data.total_invoices;
-            summaryDiv.textContent = `Versende ${totalInvoices} Rechnung(en) an ${totalGroups} Empfänger`;
+            summaryText.textContent = `Versende ${totalInvoices} Rechnung(en) an ${totalGroups} Empfänger`;
             addLogEntry('info', `Start: ${totalInvoices} Rechnung(en) an ${totalGroups} Empfänger`);
+            break;
+
+          case 'status':
+            // Update the main status line (summaryText)
+            summaryText.textContent = data.message;
             break;
 
           case 'info':
@@ -477,9 +484,10 @@
           case 'complete':
             progressBar.style.width = '100%';
             progressText.textContent = '100%';
+            spinner.classList.add('hidden');
             const completionMsg = `Abgeschlossen: ${data.success} erfolgreich versendet${data.failed > 0 ? `, ${data.failed} fehlgeschlagen` : ''}`;
             addLogEntry('info', completionMsg);
-            summaryDiv.textContent = completionMsg;
+            summaryText.textContent = completionMsg;
             closeBtn.disabled = false;
             eventSource.close();
             break;
@@ -488,6 +496,7 @@
 
       eventSource.onerror = function(error) {
         console.error('EventSource error:', error);
+        spinner.classList.add('hidden');
         addLogEntry('error', 'Verbindungsfehler beim E-Mail-Versand');
         closeBtn.disabled = false;
         eventSource.close();
@@ -748,7 +757,10 @@
         <h2>E-Mail Versand</h2>
       </div>
       <div class="modal-body">
-        <div id="email-summary" class="email-summary"></div>
+        <div id="email-summary" class="email-summary">
+          <div id="email-spinner" class="status-spinner"></div>
+          <span id="email-summary-text"></span>
+        </div>
         <div id="email-progress-container" class="progress-container">
           <div id="email-progress-bar" class="progress-bar">
             <div id="email-progress-fill" class="progress-fill"></div>

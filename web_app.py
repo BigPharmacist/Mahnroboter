@@ -1294,6 +1294,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
             latest_snapshot = latest_result['latest'] if latest_result else None
 
             # Get reminder success statistics (paid invoices that had reminders)
+            # Only count the LAST reminder level per invoice to avoid double-counting
             reminder_success_query = """
             WITH last_two_snapshots AS (
                 SELECT snapshot_date
@@ -1316,6 +1317,13 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     END AS status
                 FROM invoices i
             ),
+            last_reminder_per_invoice AS (
+                SELECT
+                    invoice_id,
+                    MAX(created_at) as max_created
+                FROM reminders
+                GROUP BY invoice_id
+            ),
             reminded_and_paid AS (
                 SELECT
                     r.reminder_level,
@@ -1324,6 +1332,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     (SELECT snapshot_date FROM last_two_snapshots ORDER BY snapshot_date DESC LIMIT 1) as last_month,
                     (SELECT snapshot_date FROM last_two_snapshots ORDER BY snapshot_date DESC LIMIT 1 OFFSET 1) as second_last_month
                 FROM reminders r
+                INNER JOIN last_reminder_per_invoice lrpi ON r.invoice_id = lrpi.invoice_id AND r.created_at = lrpi.max_created
                 JOIN invoices i ON r.invoice_id = i.id
                 JOIN invoice_status ist ON i.id = ist.id
                 WHERE ist.status = 'paid'
@@ -2005,6 +2014,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
             except Exception as e:
                 logging.error(f"Error in scan stream: {e}")
                 yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+                # Always send complete event so frontend can close modal
+                yield f"data: {json.dumps({'type': 'complete', 'success': 0, 'skipped': 0, 'failed': 0, 'total': 0, 'errors': [str(e)]})}\n\n"
 
         return Response(stream_with_context(generate()), mimetype="text/event-stream")
 
@@ -2121,12 +2132,20 @@ def create_app(config: Optional[dict] = None) -> Flask:
                             logging.warning("Failed to close SMTP connection cleanly")
                     smtp_connection = None
 
+                smtp_connection_failed = False
+
+                # Status: Connecting to SMTP
+                yield f"data: {json.dumps({'type': 'status', 'message': 'Verbinde mit SMTP-Server...'})}\n\n"
+
                 try:
                     ensure_smtp_connection()
+                    # Status: Connection established
+                    yield f"data: {json.dumps({'type': 'status', 'message': 'SMTP-Verbindung hergestellt ✓'})}\n\n"
                 except Exception as exc:
                     logging.error(f"Unable to establish SMTP connection: {exc}")
                     yield f"data: {json.dumps({'type': 'error', 'message': 'SMTP-Verbindung konnte nicht aufgebaut werden'})}\n\n"
-                    return
+                    yield f"data: {json.dumps({'type': 'status', 'message': 'SMTP-Verbindung fehlgeschlagen ✗'})}\n\n"
+                    smtp_connection_failed = True
 
                 # Get customer emails from database
                 with sqlite3.connect(app.config["DATABASE"]) as conn:
@@ -2138,101 +2157,117 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     processed_groups = 0
                     root = Path(app.config["INVOICE_ROOT"])
 
-                    # Process each group
-                    for (customer_name, month_year), invoice_list in grouped_invoices.items():
-                        # Get customer email and salutation
-                        customer_row = conn.execute(
-                            "SELECT email, salutation FROM customer_details WHERE customer_name = ?",
-                            (customer_name,)
-                        ).fetchone()
+                    # Process each group only if SMTP connection is established
+                    if not smtp_connection_failed:
+                        for (customer_name, month_year), invoice_list in grouped_invoices.items():
+                            # Get customer email and salutation
+                            customer_row = conn.execute(
+                                "SELECT email, salutation FROM customer_details WHERE customer_name = ?",
+                                (customer_name,)
+                            ).fetchone()
 
-                        if not customer_row or not customer_row["email"]:
-                            error_msg = f"Keine E-Mail-Adresse hinterlegt"
-                            yield f"data: {json.dumps({'type': 'error', 'customer': customer_name, 'message': error_msg})}\n\n"
-                            failed_count += len(invoice_list)
-                            processed_groups += 1
-                            progress = int((processed_groups / total_groups) * 100)
-                            yield f"data: {json.dumps({'type': 'progress', 'progress': progress, 'processed': processed_groups, 'total': total_groups})}\n\n"
-                            continue
-
-                        customer_email = customer_row["email"]
-                        customer_salutation = customer_row["salutation"] if "salutation" in customer_row.keys() else None
-
-                        # Collect PDFs
-                        pdf_paths = []
-                        for invoice in invoice_list:
-                            if not invoice.file_path:
-                                continue
-                            pdf_path = root / invoice.file_path
-                            if pdf_path.exists():
-                                pdf_paths.append(pdf_path)
-
-                        if not pdf_paths:
-                            error_msg = f"Keine gültigen PDF-Dateien gefunden"
-                            yield f"data: {json.dumps({'type': 'error', 'customer': customer_name, 'message': error_msg})}\n\n"
-                            failed_count += len(invoice_list)
-                            processed_groups += 1
-                            progress = int((processed_groups / total_groups) * 100)
-                            yield f"data: {json.dumps({'type': 'progress', 'progress': progress, 'processed': processed_groups, 'total': total_groups})}\n\n"
-                            continue
-
-                        # Send info message
-                        yield f"data: {json.dumps({'type': 'info', 'customer': customer_name, 'email': customer_email, 'count': len(pdf_paths)})}\n\n"
-
-                        # Send email (retry once if the SMTP server disconnects)
-                        send_success = send_invoices_batch_email(
-                            customer_email,
-                            customer_name,
-                            pdf_paths,
-                            month_year,
-                            customer_salutation,
-                            smtp_connection=ensure_smtp_connection(),
-                            smtp_config=smtp_config,
-                        )
-
-                        if not send_success:
-                            reset_smtp_connection()
-                            try:
-                                connection_for_retry = ensure_smtp_connection()
-                            except Exception as exc:
-                                logging.error(f"SMTP reconnect failed: {exc}")
-                                reset_smtp_connection()
+                            if not customer_row or not customer_row["email"]:
+                                error_msg = f"Keine E-Mail-Adresse hinterlegt"
+                                yield f"data: {json.dumps({'type': 'error', 'customer': customer_name, 'message': error_msg})}\n\n"
                                 failed_count += len(invoice_list)
-                                yield f"data: {json.dumps({'type': 'error', 'customer': customer_name, 'message': 'E-Mail-Versand fehlgeschlagen: SMTP-Verbindung getrennt'})}\n\n"
-                                return
+                                processed_groups += 1
+                                progress = int((processed_groups / total_groups) * 100)
+                                yield f"data: {json.dumps({'type': 'progress', 'progress': progress, 'processed': processed_groups, 'total': total_groups})}\n\n"
+                                continue
 
+                            customer_email = customer_row["email"]
+                            customer_salutation = customer_row["salutation"] if "salutation" in customer_row.keys() else None
+
+                            # Collect PDFs
+                            pdf_paths = []
+                            for invoice in invoice_list:
+                                if not invoice.file_path:
+                                    continue
+                                pdf_path = root / invoice.file_path
+                                if pdf_path.exists():
+                                    pdf_paths.append(pdf_path)
+
+                            if not pdf_paths:
+                                error_msg = f"Keine gültigen PDF-Dateien gefunden"
+                                yield f"data: {json.dumps({'type': 'error', 'customer': customer_name, 'message': error_msg})}\n\n"
+                                failed_count += len(invoice_list)
+                                processed_groups += 1
+                                progress = int((processed_groups / total_groups) * 100)
+                                yield f"data: {json.dumps({'type': 'progress', 'progress': progress, 'processed': processed_groups, 'total': total_groups})}\n\n"
+                                continue
+
+                            # Send info message
+                            yield f"data: {json.dumps({'type': 'info', 'customer': customer_name, 'email': customer_email, 'count': len(pdf_paths)})}\n\n"
+
+                            # Status: Sending email
+                            yield f"data: {json.dumps({'type': 'status', 'message': f'Sende E-Mail an {customer_email}... ({processed_groups + 1}/{total_groups})'})}\n\n"
+
+                            # Send email (retry once if the SMTP server disconnects)
                             send_success = send_invoices_batch_email(
                                 customer_email,
                                 customer_name,
                                 pdf_paths,
                                 month_year,
                                 customer_salutation,
-                                smtp_connection=connection_for_retry,
+                                smtp_connection=ensure_smtp_connection(),
                                 smtp_config=smtp_config,
                             )
 
-                        if send_success:
-                            success_count += len(pdf_paths)
-                            yield f"data: {json.dumps({'type': 'success', 'customer': customer_name, 'email': customer_email, 'count': len(pdf_paths)})}\n\n"
-                        else:
-                            failed_count += len(invoice_list)
-                            yield f"data: {json.dumps({'type': 'error', 'customer': customer_name, 'message': 'E-Mail-Versand fehlgeschlagen (möglicherweise Rate Limit des SMTP-Servers)'})}\n\n"
+                            if not send_success:
+                                reset_smtp_connection()
+                                yield f"data: {json.dumps({'type': 'status', 'message': f'Verbindung unterbrochen, stelle Verbindung wieder her...'})}\n\n"
+                                try:
+                                    connection_for_retry = ensure_smtp_connection()
+                                    yield f"data: {json.dumps({'type': 'status', 'message': f'Verbindung wiederhergestellt, sende E-Mail erneut an {customer_email}...'})}\n\n"
+                                except Exception as exc:
+                                    logging.error(f"SMTP reconnect failed: {exc}")
+                                    reset_smtp_connection()
+                                    failed_count += len(invoice_list)
+                                    yield f"data: {json.dumps({'type': 'error', 'customer': customer_name, 'message': 'E-Mail-Versand fehlgeschlagen: SMTP-Verbindung getrennt'})}\n\n"
+                                    yield f"data: {json.dumps({'type': 'status', 'message': f'Wiederverbindung fehlgeschlagen ✗'})}\n\n"
+                                    processed_groups += 1
+                                    progress = int((processed_groups / total_groups) * 100)
+                                    yield f"data: {json.dumps({'type': 'progress', 'progress': progress, 'processed': processed_groups, 'total': total_groups})}\n\n"
+                                    continue
 
-                        processed_groups += 1
-                        progress = int((processed_groups / total_groups) * 100)
-                        yield f"data: {json.dumps({'type': 'progress', 'progress': progress, 'processed': processed_groups, 'total': total_groups})}\n\n"
+                                send_success = send_invoices_batch_email(
+                                    customer_email,
+                                    customer_name,
+                                    pdf_paths,
+                                    month_year,
+                                    customer_salutation,
+                                    smtp_connection=connection_for_retry,
+                                    smtp_config=smtp_config,
+                                )
 
-                        # Add delay between emails to avoid rate limiting (2 seconds)
-                        if processed_groups < total_groups:
-                            time.sleep(2)
+                            if send_success:
+                                success_count += len(pdf_paths)
+                                yield f"data: {json.dumps({'type': 'success', 'customer': customer_name, 'email': customer_email, 'count': len(pdf_paths)})}\n\n"
+                                yield f"data: {json.dumps({'type': 'status', 'message': f'✓ E-Mail erfolgreich versendet an {customer_email} ({processed_groups + 1}/{total_groups})'})}\n\n"
+                            else:
+                                failed_count += len(invoice_list)
+                                yield f"data: {json.dumps({'type': 'error', 'customer': customer_name, 'message': 'E-Mail-Versand fehlgeschlagen (möglicherweise Rate Limit des SMTP-Servers)'})}\n\n"
+                                yield f"data: {json.dumps({'type': 'status', 'message': f'✗ E-Mail-Versand fehlgeschlagen an {customer_email}'})}\n\n"
+
+                            processed_groups += 1
+                            progress = int((processed_groups / total_groups) * 100)
+                            yield f"data: {json.dumps({'type': 'progress', 'progress': progress, 'processed': processed_groups, 'total': total_groups})}\n\n"
+
+                            # Add delay between emails to avoid rate limiting (2 seconds)
+                            if processed_groups < total_groups:
+                                time.sleep(2)
 
                 # Close SMTP connection and send completion message
+                yield f"data: {json.dumps({'type': 'status', 'message': 'Schließe SMTP-Verbindung...'})}\n\n"
                 reset_smtp_connection()
+                yield f"data: {json.dumps({'type': 'status', 'message': f'✓ Versand abgeschlossen: {success_count} erfolgreich, {failed_count} fehlgeschlagen'})}\n\n"
                 yield f"data: {json.dumps({'type': 'complete', 'success': success_count, 'failed': failed_count, 'total': total_invoices})}\n\n"
 
             except Exception as e:
                 logging.error(f"Error in email stream: {e}")
                 yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+                # Always send complete event so frontend can close modal
+                yield f"data: {json.dumps({'type': 'complete', 'success': 0, 'failed': 0, 'total': 0})}\n\n"
 
         return Response(stream_with_context(generate()), mimetype="text/event-stream")
 
@@ -2653,7 +2688,9 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     safe_customer_name = "".join(
                         c for c in customer_name if c.isalnum() or c in (' ', '-', '_')
                     ).strip()
-                    filename = f"Sammelrechnung_{current_month}_{safe_customer_name}.pdf"
+                    # Add timestamp to prevent overwriting files when creating multiple collective invoices for the same customer in the same month
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = f"Sammelrechnung_{current_month}_{safe_customer_name}_{timestamp}.pdf"
                     output_path = output_folder / filename
 
                     with open(output_path, 'wb') as f:
