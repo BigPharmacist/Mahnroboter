@@ -102,7 +102,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             snapshot_date TEXT NOT NULL UNIQUE,
             folder_name TEXT NOT NULL,
-            scanned_at TEXT NOT NULL DEFAULT (datetime('now'))
+            scanned_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
         )
         """
     )
@@ -118,7 +118,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             invoice_date TEXT NOT NULL,
             amount_cents INTEGER NOT NULL,
             currency TEXT NOT NULL DEFAULT 'EUR',
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
             UNIQUE(invoice_number, customer_name, amount_cents)
         )
         """
@@ -146,7 +146,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             invoice_id INTEGER NOT NULL,
             reminder_level INTEGER NOT NULL CHECK(reminder_level IN (0, 1, 2)),
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
             sent_date TEXT,
             letterexpress_status TEXT CHECK(letterexpress_status IN ('pending', 'sent', 'delivered')),
             letterexpress_id TEXT,
@@ -167,8 +167,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             notes TEXT,
             never_remind INTEGER DEFAULT 0,
             bank_debit INTEGER DEFAULT 0,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
         )
         """
     )
@@ -195,6 +195,14 @@ def init_db(conn: sqlite3.Connection) -> None:
         # Column already exists, that's fine
         pass
 
+    # Add uncollectible column to invoices if it doesn't exist (for existing databases)
+    try:
+        conn.execute("ALTER TABLE invoices ADD COLUMN uncollectible INTEGER DEFAULT 0")
+        conn.commit()
+    except sqlite3.OperationalError:
+        # Column already exists, that's fine
+        pass
+
     # Create sammelrechnungen_letterxpress table for tracking Letterxpress submissions
     conn.execute(
         """
@@ -202,7 +210,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             filename TEXT NOT NULL UNIQUE,
             letterxpress_job_id INTEGER NOT NULL,
-            submitted_at TEXT NOT NULL DEFAULT (datetime('now')),
+            submitted_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
             mode TEXT NOT NULL CHECK(mode IN ('test', 'live')),
             price REAL,
             status TEXT,
@@ -220,7 +228,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             filename TEXT NOT NULL,
             pdf_path TEXT NOT NULL UNIQUE,
             letterxpress_job_id INTEGER NOT NULL,
-            submitted_at TEXT NOT NULL DEFAULT (datetime('now')),
+            submitted_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
             mode TEXT NOT NULL CHECK(mode IN ('test', 'live')),
             price REAL,
             status TEXT,
@@ -237,9 +245,23 @@ def init_db(conn: sqlite3.Connection) -> None:
             invoice_id INTEGER NOT NULL,
             collective_invoice_filename TEXT NOT NULL,
             collective_invoice_month TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
             FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE CASCADE,
             UNIQUE(invoice_id, collective_invoice_filename)
+        )
+        """
+    )
+
+    # Create invoice_history table for tracking all events related to an invoice
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS invoice_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            invoice_id INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            event_timestamp TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+            metadata TEXT,
+            FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE CASCADE
         )
         """
     )
@@ -523,6 +545,32 @@ def determine_salutation_for_customer(customer_name: str) -> Optional[str]:
     return determine_gender_via_ai(first_name)
 
 
+def log_invoice_event(
+    conn: sqlite3.Connection,
+    invoice_id: int,
+    event_type: str,
+    metadata: Optional[dict] = None
+) -> None:
+    """
+    Log an event for an invoice in the invoice_history table.
+
+    Args:
+        conn: Database connection
+        invoice_id: ID of the invoice
+        event_type: Type of event (e.g., 'IMPORT', 'EMAIL_SENT', 'REMINDER_CREATED')
+        metadata: Optional dictionary with additional event details (will be stored as JSON)
+    """
+    import json
+    metadata_json = json.dumps(metadata) if metadata else None
+    conn.execute(
+        """
+        INSERT INTO invoice_history (invoice_id, event_type, metadata)
+        VALUES (?, ?, ?)
+        """,
+        (invoice_id, event_type, metadata_json)
+    )
+
+
 def storage_key(pdf_path: Path, root: Path) -> str:
     try:
         return str(pdf_path.relative_to(root))
@@ -574,14 +622,27 @@ def process_pdf_file(conn: sqlite3.Connection, pdf_path: Path, root: Path) -> bo
             conn.execute(
                 """
                 INSERT INTO customer_details (customer_name, salutation, updated_at)
-                VALUES (?, ?, datetime('now'))
+                VALUES (?, ?, datetime('now', 'localtime'))
                 ON CONFLICT(customer_name) DO UPDATE SET
                     salutation = excluded.salutation,
-                    updated_at = datetime('now')
+                    updated_at = datetime('now', 'localtime')
                 """,
                 (record.customer_name, salutation)
             )
             logging.info("Anrede für %s automatisch ermittelt: %s", record.customer_name, salutation)
+
+    # Log import event for new invoices
+    if is_new_link:
+        log_invoice_event(
+            conn,
+            invoice_id,
+            "IMPORT",
+            {
+                "snapshot_date": snapshot_date,
+                "file_path": key,
+                "amount": record.amount_cents / 100
+            }
+        )
 
     conn.commit()
 

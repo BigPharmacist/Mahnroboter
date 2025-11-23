@@ -59,6 +59,7 @@ from invoice_tracker import (
     find_pdfs,
     init_db,
     process_pdf_file,
+    log_invoice_event,
 )
 from letterxpress_client import LetterXpressClient
 
@@ -1117,6 +1118,7 @@ class InvoiceRow:
     first_seen_snapshot: str  # First snapshot where this invoice appeared
     file_path: Optional[str] = None  # Path in the latest/last snapshot
     in_collective_invoice: bool = False  # Whether this invoice is in a collective invoice
+    uncollectible: int = 0  # Whether this invoice is marked as uncollectible
 
     @property
     def amount_eur(self) -> float:
@@ -1459,6 +1461,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
     def mahnungen() -> Response:
         """Mahnungen overview page with 4 tabs by reminder status."""
         view = request.args.get("view", "unbemahnt")  # 'unbemahnt', 'zahlungserinnerung', '1_mahnung', '2_mahnung'
+        show_uncollectible = request.args.get("show_uncollectible", "false").lower() == "true"
 
         # Fetch all invoices to calculate tab counts
         all_unbemahnt = fetch_invoices_with_reminders(app.config["DATABASE"], filter_reminded=False)
@@ -1467,14 +1470,20 @@ def create_app(config: Optional[dict] = None) -> Flask:
         all_reminded = fetch_invoices_with_reminders(app.config["DATABASE"], filter_reminded=True)
         zahlungserinnerung_invoices = [inv for inv in all_reminded if inv.last_reminder_level == 0]
         mahnung_1_invoices = [inv for inv in all_reminded if inv.last_reminder_level == 1]
-        mahnung_2_invoices = [inv for inv in all_reminded if inv.last_reminder_level == 2]
+        mahnung_2_invoices_all = [inv for inv in all_reminded if inv.last_reminder_level == 2]
 
-        # Calculate tab counts for badges
+        # For 2. Mahnung view: filter uncollectible invoices unless explicitly shown
+        if view == "2_mahnung" and not show_uncollectible:
+            mahnung_2_invoices = [inv for inv in mahnung_2_invoices_all if not inv.uncollectible]
+        else:
+            mahnung_2_invoices = mahnung_2_invoices_all
+
+        # Calculate tab counts for badges (always show total including uncollectible)
         tab_counts = {
             'unbemahnt': len(unbemahnt_invoices),
             'zahlungserinnerung': len(zahlungserinnerung_invoices),
             '1_mahnung': len(mahnung_1_invoices),
-            '2_mahnung': len(mahnung_2_invoices),
+            '2_mahnung': len(mahnung_2_invoices_all),  # Total count
         }
 
         # Select invoices based on current view
@@ -1564,7 +1573,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
             "mahnungen.html",
             customer_groups=grouped_invoices,
             view=view,
-            stats=stats
+            stats=stats,
+            show_uncollectible=show_uncollectible
         )
 
     @app.route("/vorlagen")
@@ -1604,14 +1614,14 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 conn.execute(
                     """
                     INSERT INTO customer_details (customer_name, salutation, email, notes, never_remind, bank_debit, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+                    VALUES (?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
                     ON CONFLICT(customer_name) DO UPDATE SET
                         salutation = excluded.salutation,
                         email = excluded.email,
                         notes = excluded.notes,
                         never_remind = excluded.never_remind,
                         bank_debit = excluded.bank_debit,
-                        updated_at = datetime('now')
+                        updated_at = datetime('now', 'localtime')
                     """,
                     (customer_name, salutation, email, notes, never_remind, bank_debit)
                 )
@@ -1657,10 +1667,10 @@ def create_app(config: Optional[dict] = None) -> Flask:
                         conn.execute(
                             """
                             INSERT INTO customer_details (customer_name, salutation, updated_at)
-                            VALUES (?, ?, datetime('now'))
+                            VALUES (?, ?, datetime('now', 'localtime'))
                             ON CONFLICT(customer_name) DO UPDATE SET
                                 salutation = excluded.salutation,
-                                updated_at = datetime('now')
+                                updated_at = datetime('now', 'localtime')
                             """,
                             (customer_name, salutation)
                         )
@@ -2242,6 +2252,19 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
                             if send_success:
                                 success_count += len(pdf_paths)
+                                # Log email sent event for each invoice
+                                for invoice in invoice_list:
+                                    log_invoice_event(
+                                        conn,
+                                        invoice.id,
+                                        "EMAIL_SENT",
+                                        {
+                                            "email": customer_email,
+                                            "month": month_year,
+                                            "pdf_count": len(pdf_paths)
+                                        }
+                                    )
+                                conn.commit()
                                 yield f"data: {json.dumps({'type': 'success', 'customer': customer_name, 'email': customer_email, 'count': len(pdf_paths)})}\n\n"
                                 yield f"data: {json.dumps({'type': 'status', 'message': f'✓ E-Mail erfolgreich versendet an {customer_email} ({processed_groups + 1}/{total_groups})'})}\n\n"
                             else:
@@ -2306,6 +2329,17 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     """,
                     (invoice_id, reminder_level)
                 )
+
+                # Log reminder creation event
+                log_invoice_event(
+                    conn,
+                    invoice_id,
+                    "REMINDER_CREATED",
+                    {
+                        "reminder_level": reminder_level
+                    }
+                )
+
                 conn.commit()
 
                 return jsonify({
@@ -2508,6 +2542,17 @@ def create_app(config: Optional[dict] = None) -> Flask:
                                 """,
                                 (inv['id'], reminder_level, relative_pdf_path)
                             )
+                            # Log reminder creation event
+                            log_invoice_event(
+                                conn,
+                                inv['id'],
+                                "REMINDER_CREATED",
+                                {
+                                    "reminder_level": reminder_level,
+                                    "pdf_path": relative_pdf_path,
+                                    "invoice_count": len(invoice_list)
+                                }
+                            )
                             created_reminders += 1
                         except sqlite3.IntegrityError:
                             # Skip if reminder already exists
@@ -2706,6 +2751,17 @@ def create_app(config: Optional[dict] = None) -> Flask:
                                 VALUES (?, ?, ?)
                                 """,
                                 (inv.id, filename, current_month)
+                            )
+                            # Log collective invoice creation event
+                            log_invoice_event(
+                                conn,
+                                inv.id,
+                                "COLLECTIVE_INVOICE_CREATED",
+                                {
+                                    "filename": filename,
+                                    "month": current_month,
+                                    "invoice_count": len(current_month_invoices)
+                                }
                             )
                         except Exception as e:
                             logging.error(f"Error tracking invoice {inv.id} in collective invoice: {e}")
@@ -3007,6 +3063,26 @@ def create_app(config: Optional[dict] = None) -> Flask:
                                 """,
                                 (filename, job_id, mode, price, customer, month)
                             )
+
+                            # Log event for all invoices in this collective invoice
+                            cursor = db_conn.execute(
+                                "SELECT invoice_id FROM collective_invoice_items WHERE collective_invoice_filename = ?",
+                                (filename,)
+                            )
+                            invoice_ids = [row[0] for row in cursor.fetchall()]
+                            for inv_id in invoice_ids:
+                                log_invoice_event(
+                                    db_conn,
+                                    inv_id,
+                                    "COLLECTIVE_INVOICE_SENT",
+                                    {
+                                        "letterxpress_job_id": job_id,
+                                        "price": price,
+                                        "mode": mode,
+                                        "filename": filename
+                                    }
+                                )
+
                             db_conn.commit()
                             logging.info(f"Saved LetterXpress job {job_id} for {filename} to database")
                     except Exception as db_err:
@@ -3162,10 +3238,31 @@ def create_app(config: Optional[dict] = None) -> Flask:
                                 """
                                 INSERT OR REPLACE INTO mahnungen_letterxpress
                                 (filename, pdf_path, letterxpress_job_id, mode, price, customer_name, submitted_at)
-                                VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+                                VALUES (?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
                                 """,
                                 (filename, relative_path, job_id, mode, price, customer_name)
                             )
+
+                            # Log event for all invoices associated with this reminder PDF
+                            cursor = db_conn.execute(
+                                "SELECT invoice_id, reminder_level FROM reminders WHERE pdf_path = ?",
+                                (relative_path,)
+                            )
+                            reminder_rows = cursor.fetchall()
+                            for inv_id, reminder_level in reminder_rows:
+                                log_invoice_event(
+                                    db_conn,
+                                    inv_id,
+                                    "REMINDER_SENT",
+                                    {
+                                        "letterxpress_job_id": job_id,
+                                        "price": price,
+                                        "mode": mode,
+                                        "reminder_level": reminder_level,
+                                        "filename": filename
+                                    }
+                                )
+
                             db_conn.commit()
                             logging.info(f"Saved LetterXpress job {job_id} for {filename} to database")
                     except Exception as db_err:
@@ -3209,6 +3306,105 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
         except Exception as e:
             logging.error(f"Error in send_reminders_via_letterxpress: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/api/invoices/<int:invoice_id>/history", methods=["GET"])
+    def get_invoice_history(invoice_id: int):
+        """Get the complete history of events for a specific invoice."""
+        try:
+            with sqlite3.connect(app.config["DATABASE"]) as conn:
+                conn.row_factory = sqlite3.Row
+                init_db(conn)
+
+                # Check if invoice exists
+                invoice_check = conn.execute(
+                    "SELECT id, customer_name, invoice_number, invoice_date, amount_cents FROM invoices WHERE id = ?",
+                    (invoice_id,)
+                ).fetchone()
+
+                if not invoice_check:
+                    return jsonify({"success": False, "error": "Rechnung nicht gefunden"}), 404
+
+                # Get all history events for this invoice
+                cursor = conn.execute(
+                    """
+                    SELECT
+                        id,
+                        event_type,
+                        event_timestamp,
+                        metadata
+                    FROM invoice_history
+                    WHERE invoice_id = ?
+                    ORDER BY event_timestamp DESC
+                    """,
+                    (invoice_id,)
+                )
+
+                events = []
+                for row in cursor.fetchall():
+                    metadata_dict = json.loads(row["metadata"]) if row["metadata"] else {}
+                    events.append({
+                        "id": row["id"],
+                        "event_type": row["event_type"],
+                        "timestamp": row["event_timestamp"],
+                        "metadata": metadata_dict
+                    })
+
+                return jsonify({
+                    "success": True,
+                    "invoice": {
+                        "id": invoice_check["id"],
+                        "customer_name": invoice_check["customer_name"],
+                        "invoice_number": invoice_check["invoice_number"],
+                        "invoice_date": invoice_check["invoice_date"],
+                        "amount_eur": invoice_check["amount_cents"] / 100.0
+                    },
+                    "events": events
+                })
+
+        except Exception as e:
+            logging.error(f"Error fetching invoice history: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/api/invoices/<int:invoice_id>/toggle-uncollectible", methods=["POST"])
+    def toggle_uncollectible(invoice_id: int):
+        """Toggle the uncollectible status of an invoice."""
+        try:
+            with sqlite3.connect(app.config["DATABASE"]) as conn:
+                conn.row_factory = sqlite3.Row
+                init_db(conn)
+
+                # Check if invoice exists and get current status
+                invoice = conn.execute(
+                    "SELECT id, customer_name, invoice_number, uncollectible FROM invoices WHERE id = ?",
+                    (invoice_id,)
+                ).fetchone()
+
+                if not invoice:
+                    return jsonify({"success": False, "error": "Rechnung nicht gefunden"}), 404
+
+                # Toggle the uncollectible status
+                current_status = invoice["uncollectible"] or 0
+                new_status = 0 if current_status else 1
+
+                conn.execute(
+                    "UPDATE invoices SET uncollectible = ? WHERE id = ?",
+                    (new_status, invoice_id)
+                )
+
+                # Log the event in history
+                event_type = "MARKED_UNCOLLECTIBLE" if new_status else "UNMARKED_UNCOLLECTIBLE"
+                log_invoice_event(conn, invoice_id, event_type, {})
+
+                conn.commit()
+
+                return jsonify({
+                    "success": True,
+                    "uncollectible": bool(new_status)
+                })
+
+        except Exception as e:
+            logging.error(f"Error toggling uncollectible status: {e}")
             return jsonify({"success": False, "error": str(e)}), 500
 
     @app.route("/pdf/<path:relative_path>")
@@ -3291,6 +3487,7 @@ def fetch_invoices(
                     i.customer_name,
                     i.customer_address,
                     i.amount_cents,
+                    i.uncollectible,
                     MAX(s.snapshot_date) as last_seen_snapshot,
                     MIN(s.snapshot_date) as first_seen_snapshot,
                     CASE
@@ -3323,6 +3520,7 @@ def fetch_invoices(
             FROM invoice_status ist
             LEFT JOIN customer_details cd ON ist.customer_name = cd.customer_name
             WHERE 1=1
+              AND (ist.uncollectible IS NULL OR ist.uncollectible = 0)
         """
 
         params = [latest_snapshot]

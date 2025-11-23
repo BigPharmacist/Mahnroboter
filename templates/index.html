@@ -242,6 +242,7 @@
               </a>
             </th>
             <th>Sammelrechnung</th>
+            <th>History</th>
             <th>PDF</th>
           </tr>
         </thead>
@@ -268,6 +269,11 @@
                 –
               {% endif %}
             </td>
+            <td style="text-align: center;">
+              <button class="history-btn" data-invoice-id="{{ invoice.id }}" data-invoice-number="{{ invoice.invoice_number or 'N/A' }}" data-customer-name="{{ invoice.customer_name }}" title="Verlauf anzeigen">
+                📋
+              </button>
+            </td>
             <td>
               {% if invoice.file_path %}
               <a href="{{ url_for('serve_pdf', relative_path=invoice.file_path) }}" target="_blank" rel="noopener">
@@ -280,7 +286,7 @@
           </tr>
           {% else %}
           <tr>
-            <td colspan="9" class="empty">Keine passenden Rechnungen gefunden.</td>
+            <td colspan="10" class="empty">Keine passenden Rechnungen gefunden.</td>
           </tr>
           {% endfor %}
         </tbody>
@@ -806,4 +812,220 @@
     </div>
   </div>
 </div>
+
+<!-- History Modal -->
+<div id="history-modal" class="modal">
+  <div class="modal-content" style="max-width: 800px;">
+    <div class="modal-header">
+      <h2>Rechnungs-Verlauf</h2>
+    </div>
+    <div class="modal-body" style="padding: 2rem;">
+      <div id="history-invoice-info" style="margin-bottom: 1.5rem; padding: 1rem; background: #f5f5f5; border-radius: 8px;">
+        <div style="display: grid; grid-template-columns: auto 1fr; gap: 0.5rem 1rem;">
+          <strong>Kunde:</strong>
+          <span id="history-customer-name">-</span>
+          <strong>Rechnungsnr.:</strong>
+          <span id="history-invoice-number">-</span>
+          <strong>Datum:</strong>
+          <span id="history-invoice-date">-</span>
+          <strong>Betrag:</strong>
+          <span id="history-invoice-amount">-</span>
+        </div>
+      </div>
+      <div id="history-loading" style="text-align: center; padding: 2rem;">
+        Lade Verlauf...
+      </div>
+      <div id="history-timeline" style="max-height: 400px; overflow-y: auto;">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button id="close-history-modal" class="modal-close-btn">Schließen</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // History Modal Logic
+  (function() {
+    const modal = document.getElementById('history-modal');
+    const closeBtn = document.getElementById('close-history-modal');
+    const historyBtns = document.querySelectorAll('.history-btn');
+
+    // Event type translations
+    const eventTypeTranslations = {
+      'IMPORT': 'Import',
+      'EMAIL_SENT': 'E-Mail versendet',
+      'COLLECTIVE_INVOICE_CREATED': 'Sammelrechnung erstellt',
+      'COLLECTIVE_INVOICE_SENT': 'Sammelrechnung versendet',
+      'REMINDER_CREATED': 'Mahnung erstellt',
+      'REMINDER_SENT': 'Mahnung versendet',
+      'MARKED_UNCOLLECTIBLE': 'Als uneinbringbar markiert',
+      'UNMARKED_UNCOLLECTIBLE': 'Uneinbringbar-Status aufgehoben'
+    };
+
+    // Event type icons
+    const eventTypeIcons = {
+      'IMPORT': '📥',
+      'EMAIL_SENT': '✉️',
+      'COLLECTIVE_INVOICE_CREATED': '📄',
+      'COLLECTIVE_INVOICE_SENT': '📮',
+      'REMINDER_CREATED': '⚠️',
+      'REMINDER_SENT': '📨',
+      'MARKED_UNCOLLECTIBLE': '❌',
+      'UNMARKED_UNCOLLECTIBLE': '✅'
+    };
+
+    // Reminder level translations
+    const reminderLevelTranslations = {
+      0: 'Zahlungserinnerung',
+      1: '1. Mahnung',
+      2: '2. Mahnung'
+    };
+
+    function formatTimestamp(timestamp) {
+      const date = new Date(timestamp);
+      return date.toLocaleDateString('de-DE', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    }
+
+    function formatEventDetails(eventType, metadata) {
+      const details = [];
+
+      if (metadata.email) {
+        details.push(`E-Mail: ${metadata.email}`);
+      }
+
+      if (metadata.letterxpress_job_id) {
+        details.push(`LetterXpress Job: #${metadata.letterxpress_job_id}`);
+      }
+
+      if (metadata.price !== undefined) {
+        details.push(`Kosten: ${metadata.price.toFixed(2)} €`);
+      }
+
+      if (metadata.reminder_level !== undefined) {
+        details.push(`Stufe: ${reminderLevelTranslations[metadata.reminder_level] || metadata.reminder_level}`);
+      }
+
+      if (metadata.filename) {
+        details.push(`Datei: ${metadata.filename}`);
+      }
+
+      if (metadata.mode) {
+        details.push(`Modus: ${metadata.mode}`);
+      }
+
+      return details.length > 0 ? details.join(' • ') : '';
+    }
+
+    function loadHistory(invoiceId, customerName, invoiceNumber) {
+      // Show modal
+      modal.classList.add('show');
+
+      // Reset content
+      document.getElementById('history-loading').style.display = 'block';
+      document.getElementById('history-loading').textContent = 'Lade Verlauf...';
+      document.getElementById('history-timeline').innerHTML = '';
+
+      // Fetch history
+      fetch(`/api/invoices/${invoiceId}/history`)
+        .then(response => response.json())
+        .then(data => {
+          if (data.success) {
+            // Update invoice info
+            document.getElementById('history-customer-name').textContent = data.invoice.customer_name;
+            document.getElementById('history-invoice-number').textContent = data.invoice.invoice_number || 'N/A';
+            document.getElementById('history-invoice-date').textContent = formatTimestamp(data.invoice.invoice_date);
+            document.getElementById('history-invoice-amount').textContent = `${data.invoice.amount_eur.toFixed(2)} €`;
+
+            // Build timeline
+            const timeline = document.getElementById('history-timeline');
+            timeline.innerHTML = '';
+
+            if (data.events.length === 0) {
+              timeline.innerHTML = '<div style="text-align: center; padding: 2rem; color: #666;">Noch keine Ereignisse für diese Rechnung.</div>';
+            } else {
+              const timelineList = document.createElement('div');
+              timelineList.style.cssText = 'position: relative; padding-left: 2rem;';
+
+              data.events.forEach((event, index) => {
+                const eventItem = document.createElement('div');
+                eventItem.style.cssText = 'position: relative; padding-bottom: 1.5rem;';
+
+                // Timeline line
+                if (index < data.events.length - 1) {
+                  const line = document.createElement('div');
+                  line.style.cssText = 'position: absolute; left: -1.4rem; top: 1.5rem; bottom: 0; width: 2px; background: #ddd;';
+                  eventItem.appendChild(line);
+                }
+
+                // Timeline dot
+                const dot = document.createElement('div');
+                dot.style.cssText = 'position: absolute; left: -1.8rem; top: 0.3rem; width: 1rem; height: 1rem; border-radius: 50%; background: #4CAF50; border: 3px solid white; box-shadow: 0 0 0 1px #ddd;';
+                eventItem.appendChild(dot);
+
+                // Event content
+                const content = document.createElement('div');
+                const icon = eventTypeIcons[event.event_type] || '•';
+                const eventName = eventTypeTranslations[event.event_type] || event.event_type;
+                const details = formatEventDetails(event.event_type, event.metadata);
+
+                content.innerHTML = `
+                  <div style="font-weight: bold; margin-bottom: 0.25rem;">
+                    ${icon} ${eventName}
+                  </div>
+                  <div style="font-size: 0.85rem; color: #666; margin-bottom: 0.25rem;">
+                    ${formatTimestamp(event.timestamp)}
+                  </div>
+                  ${details ? `<div style="font-size: 0.85rem; color: #444;">${details}</div>` : ''}
+                `;
+                eventItem.appendChild(content);
+
+                timelineList.appendChild(eventItem);
+              });
+
+              timeline.appendChild(timelineList);
+            }
+
+            // Hide loading
+            document.getElementById('history-loading').style.display = 'none';
+          } else {
+            document.getElementById('history-timeline').innerHTML = `<div style="text-align: center; padding: 2rem; color: #d32f2f;">Fehler: ${data.error}</div>`;
+          }
+        })
+        .catch(error => {
+          console.error('Error loading history:', error);
+          document.getElementById('history-timeline').innerHTML = `<div style="text-align: center; padding: 2rem; color: #d32f2f;">Fehler beim Laden des Verlaufs.</div>`;
+        });
+    }
+
+    // Attach click handlers to all history buttons
+    historyBtns.forEach(btn => {
+      btn.addEventListener('click', function() {
+        const invoiceId = this.getAttribute('data-invoice-id');
+        const customerName = this.getAttribute('data-customer-name');
+        const invoiceNumber = this.getAttribute('data-invoice-number');
+        loadHistory(invoiceId, customerName, invoiceNumber);
+      });
+    });
+
+    // Close modal handler
+    closeBtn.addEventListener('click', function() {
+      modal.classList.remove('show');
+    });
+
+    // Close modal when clicking outside
+    modal.addEventListener('click', function(e) {
+      if (e.target === modal) {
+        modal.classList.remove('show');
+      }
+    });
+  })();
+</script>
+
 {% endblock %}

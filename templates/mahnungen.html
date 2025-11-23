@@ -82,6 +82,16 @@
       📮 Per LetterXpress versenden
     </button>
     {% endif %}
+    {% if view == '2_mahnung' %}
+    <a href="{{ url_for('mahnungen', view='2_mahnung', show_uncollectible='true' if not show_uncollectible else 'false') }}"
+       class="btn btn-secondary btn-sm" style="margin-left: 1rem;">
+      {% if show_uncollectible %}
+        ✓ Uneinbringbare Re. ausblenden
+      {% else %}
+        👁 Uneinbringbare Re. anzeigen
+      {% endif %}
+    </a>
+    {% endif %}
   </div>
   {% for customer in customer_groups %}
   <div class="customer-group">
@@ -130,6 +140,9 @@
           <th>Gesendet am</th>
           {% endif %}
           <th>PDF</th>
+          {% if view == '2_mahnung' %}
+          <th>Uneinbringbar</th>
+          {% endif %}
         </tr>
       </thead>
       <tbody>
@@ -223,6 +236,9 @@
                     <span class="muted">—</span>
                   {% endif %}
                 </td>
+                {% if view == '2_mahnung' %}
+                <td></td>
+                {% endif %}
               </tr>
               {# Individual invoices in group (collapsed by default) #}
               {% for invoice in group.invoices %}
@@ -268,6 +284,18 @@
                     <span class="muted">—</span>
                   {% endif %}
                 </td>
+                {% if view == '2_mahnung' %}
+                <td style="text-align: center;" onclick="event.stopPropagation()">
+                  <label class="uncollectible-checkbox">
+                    <input type="checkbox"
+                           class="uncollectible-input"
+                           data-invoice-id="{{ invoice.id }}"
+                           {{ 'checked' if invoice.uncollectible else '' }}
+                           title="{{ 'Als einbringbar markieren' if invoice.uncollectible else 'Als uneinbringbar markieren' }}">
+                    <span class="uncollectible-checkmark"></span>
+                  </label>
+                </td>
+                {% endif %}
               </tr>
               {% endfor %}
             {% else %}
@@ -332,6 +360,9 @@
                     <span class="muted">—</span>
                   {% endif %}
                 </td>
+                {% if view == '2_mahnung' %}
+                <td></td>
+                {% endif %}
               </tr>
               {# Detail row for single invoice - expanded by default #}
               <tr class="invoice-group-detail single-invoice-detail">
@@ -360,6 +391,18 @@
                     <span class="muted">—</span>
                   {% endif %}
                 </td>
+                {% if view == '2_mahnung' %}
+                <td style="text-align: center;" onclick="event.stopPropagation()">
+                  <label class="uncollectible-checkbox">
+                    <input type="checkbox"
+                           class="uncollectible-input"
+                           data-invoice-id="{{ invoice.id }}"
+                           {{ 'checked' if invoice.uncollectible else '' }}
+                           title="{{ 'Als einbringbar markieren' if invoice.uncollectible else 'Als uneinbringbar markieren' }}">
+                    <span class="uncollectible-checkmark"></span>
+                  </label>
+                </td>
+                {% endif %}
               </tr>
             {% endif %}
           {% endfor %}
@@ -978,6 +1021,53 @@ async function checkLetterXpressMode() {
 document.addEventListener('DOMContentLoaded', function() {
   updatePDFSelectionCount();
 });
+
+// Uncollectible Checkbox Logic
+(function() {
+  const uncollectibleCheckboxes = document.querySelectorAll('.uncollectible-input');
+
+  uncollectibleCheckboxes.forEach(checkbox => {
+    checkbox.addEventListener('click', function(e) {
+      e.preventDefault(); // Prevent default checkbox behavior
+      e.stopPropagation(); // Stop event from bubbling
+
+      const invoiceId = this.getAttribute('data-invoice-id');
+      const currentStatus = this.checked;
+      const newStatus = !currentStatus;
+
+      if (confirm(newStatus ? 'Diese Rechnung als uneinbringbar markieren?' : 'Diese Rechnung als einbringbar markieren?')) {
+        // Show loading state
+        this.disabled = true;
+
+        fetch(`/api/invoices/${invoiceId}/toggle-uncollectible`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        })
+        .then(response => response.json())
+        .then(data => {
+          if (data.success) {
+            // Update checkbox state
+            this.checked = data.uncollectible;
+            // Reload page to update the invoice list
+            setTimeout(() => {
+              window.location.reload();
+            }, 100);
+          } else {
+            alert('Fehler: ' + (data.error || 'Unbekannter Fehler'));
+            this.disabled = false;
+          }
+        })
+        .catch(error => {
+          console.error('Error toggling uncollectible status:', error);
+          alert('Fehler beim Aktualisieren des Status.');
+          this.disabled = false;
+        });
+      }
+    });
+  });
+})();
 </script>
 
 <style>
@@ -1489,6 +1579,56 @@ document.addEventListener('DOMContentLoaded', function() {
   margin-top: 0.25rem;
   font-size: 0.875rem;
   color: #6c757d;
+}
+
+/* Custom Checkbox for Uncollectible */
+.uncollectible-checkbox {
+  display: inline-block;
+  position: relative;
+  cursor: pointer;
+  user-select: none;
+}
+
+.uncollectible-input {
+  position: absolute;
+  opacity: 0;
+  cursor: pointer;
+  height: 0;
+  width: 0;
+}
+
+.uncollectible-checkmark {
+  display: inline-block;
+  width: 22px;
+  height: 22px;
+  background-color: white;
+  border: 2px solid #cbd5e0;
+  border-radius: 4px;
+  position: relative;
+  transition: all 0.2s ease;
+}
+
+.uncollectible-checkbox:hover .uncollectible-checkmark {
+  border-color: #a0aec0;
+  background-color: #f7fafc;
+}
+
+.uncollectible-input:checked ~ .uncollectible-checkmark {
+  background-color: #dc3545;
+  border-color: #dc3545;
+}
+
+.uncollectible-input:checked ~ .uncollectible-checkmark:after {
+  content: "";
+  position: absolute;
+  display: block;
+  left: 6px;
+  top: 2px;
+  width: 5px;
+  height: 10px;
+  border: solid white;
+  border-width: 0 3px 3px 0;
+  transform: rotate(45deg);
 }
 </style>
 
