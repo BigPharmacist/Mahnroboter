@@ -67,3 +67,15 @@ tmp/
 *api_key*
 *apikey*
 *secret*
+
+# Generierte Ordner mit Kundendaten und Dokumenten
+Mahnungen/
+Rechnungen/
+Sammelrechnungen/
+Old/
+
+# Logo-Dateien (können bei Bedarf manuell hinzugefügt werden)
+*.jpg
+*.png
+!Logo*.png
+!Logo*.jpg
