@@ -22,6 +22,7 @@ from typing import Iterable, Optional
 import os
 
 from pypdf import PdfReader
+import pdfplumber
 from dotenv import load_dotenv
 import requests
 
@@ -43,7 +44,7 @@ DEFAULT_DB_PATH = BASE_DIR / "invoice_data.db"
 CUSTOMER_MARKERS = {"Herr", "Herrn", "Frau", "Familie"}
 DATE_PATTERN = re.compile(r"(?:Datum:\s*(\d{2}\.\d{2}\.\d{4})|(\d{2}\.\d{2}\.\d{4})\s*Datum:)")
 INVOICE_NO_PATTERN = re.compile(r"(?:Rechnungs-Nr|Deckblatt-Nr):\s*([\w\-\/]+)")
-TOTAL_PATTERN = re.compile(r"(?:Gesamtsumme|Zwischensumme|Rechnungsbetrag).*?([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})\s*€")
+TOTAL_PATTERN = re.compile(r"(?:Gesamtsumme|Zwischensumme|Rechnungsbetrag).*?([0-9]+(?:\.[0-9]{3})*,[0-9]{2})\s*€")
 
 
 @dataclass
@@ -91,7 +92,24 @@ def parse_args() -> argparse.Namespace:
 
 def configure_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(level=level, format="%(levelname)s: %(message)s")
+
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(level)
+    console_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    root_logger.addHandler(console_handler)
+
+    # File handler for errors
+    file_handler = logging.FileHandler("import_errors.log", encoding="utf-8")
+    file_handler.setLevel(logging.ERROR)
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    )
+    root_logger.addHandler(file_handler)
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -303,8 +321,31 @@ def find_pdfs(root: Path) -> Iterable[Path]:
 
 
 def extract_text(pdf_path: Path) -> str:
-    reader = PdfReader(pdf_path)
-    return "\n".join(page.extract_text() or "" for page in reader.pages)
+    """Extract text from PDF using pdfplumber for better structure recognition."""
+    with pdfplumber.open(pdf_path) as pdf:
+        return "\n".join(page.extract_text() or "" for page in pdf.pages)
+
+
+def is_storno_document(text: str) -> bool:
+    """
+    Check if the document is a Stornobeleg (cancellation document).
+    Returns True if it's a cancellation, False if it's a regular invoice.
+    """
+    # Keywords that indicate a cancellation document
+    storno_keywords = [
+        "Stornobeleg für",
+        "Stornierung für",
+        "Stornodatum:",
+        "Stornogrund:",
+    ]
+
+    text_lower = text.lower()
+
+    for keyword in storno_keywords:
+        if keyword.lower() in text_lower:
+            return True
+
+    return False
 
 
 def extract_customer(lines: list[str]) -> tuple[str, str]:
@@ -345,8 +386,46 @@ def extract_customer(lines: list[str]) -> tuple[str, str]:
     raise ValueError("Keine Empfängeradresse gefunden")
 
 
+def extract_total_amount_robust(text: str) -> int:
+    """
+    Extract total amount with fallback for table-style format.
+    Tries the old inline pattern first, then table format.
+    """
+    # Try the old pattern first
+    total_match = TOTAL_PATTERN.search(text)
+    if total_match:
+        amount_raw = total_match.group(1).replace(".", "").replace(",", ".")
+        try:
+            amount = Decimal(amount_raw)
+            return int((amount * 100).to_integral_value())
+        except InvalidOperation:
+            pass
+
+    # Try table-style format where headers and values are on separate lines
+    lines = text.split('\n')
+    for i, line in enumerate(lines):
+        if 'Rechnungsbetrag' in line and i + 1 < len(lines):
+            next_line = lines[i + 1]
+            # Extract the last amount (should be the total)
+            amounts = re.findall(r'([0-9]+(?:\.[0-9]{3})*,[0-9]{2})\s*€', next_line)
+            if amounts:
+                amount_raw = amounts[-1].replace(".", "").replace(",", ".")
+                try:
+                    amount = Decimal(amount_raw)
+                    return int((amount * 100).to_integral_value())
+                except InvalidOperation:
+                    pass
+
+    raise ValueError("Gesamtsumme nicht gefunden")
+
+
 def parse_invoice(pdf_path: Path, storage_path: str) -> InvoiceRecord:
     text = extract_text(pdf_path)
+
+    # Check if this is a Stornobeleg
+    if is_storno_document(text):
+        raise ValueError("Stornobeleg - wird nicht importiert")
+
     lines = [line for line in text.splitlines() if line.strip()]
 
     date_match = DATE_PATTERN.search(text)
@@ -367,15 +446,8 @@ def parse_invoice(pdf_path: Path, storage_path: str) -> InvoiceRecord:
     invoice_match = INVOICE_NO_PATTERN.search(text)
     invoice_number = invoice_match.group(1).strip() if invoice_match else None
 
-    total_match = TOTAL_PATTERN.search(text)
-    if not total_match:
-        raise ValueError("Gesamtsumme nicht gefunden")
-    amount_raw = total_match.group(1).replace(".", "").replace(",", ".")
-    try:
-        amount = Decimal(amount_raw)
-    except InvalidOperation as exc:
-        raise ValueError(f"Ungültiger Rechnungsbetrag: {amount_raw}") from exc
-    amount_cents = int((amount * 100).to_integral_value())
+    # Use robust extraction method
+    amount_cents = extract_total_amount_robust(text)
 
     customer_name, customer_address = extract_customer(lines)
 
@@ -667,11 +739,13 @@ def detect_and_log_payments(conn: sqlite3.Connection, current_snapshot_date: str
 
 
 def storage_key(pdf_path: Path, root: Path) -> str:
+    # Always store paths relative to BASE_DIR for consistency with serve_pdf route
     try:
-        return str(pdf_path.relative_to(root))
+        return str(pdf_path.relative_to(BASE_DIR))
     except ValueError:
+        # Fallback: if not under BASE_DIR, try relative to root
         try:
-            return str(pdf_path.relative_to(BASE_DIR))
+            return str(pdf_path.relative_to(root))
         except ValueError:
             return str(pdf_path.resolve())
 
@@ -842,18 +916,29 @@ def main() -> None:
         return
 
     new_entries = 0
+    skipped_storno = 0
     with sqlite3.connect(db_path) as conn:
         init_db(conn)
         for pdf_path in pdf_files:
             try:
                 if process_pdf_file(conn, pdf_path, root):
                     new_entries += 1
+            except ValueError as exc:
+                # Check if this is a Stornobeleg
+                if "Stornobeleg" in str(exc):
+                    logging.debug("Überspringe Stornobeleg: %s", pdf_path.name)
+                    skipped_storno += 1
+                else:
+                    logging.error("Kann %s nicht verarbeiten: %s", pdf_path, exc)
+                continue
             except Exception as exc:
                 logging.error("Kann %s nicht verarbeiten: %s", pdf_path, exc)
                 continue
         conn.commit()
 
     logging.info("Fertig. %s neue Rechnungen gespeichert.", new_entries)
+    if skipped_storno > 0:
+        logging.info("%s Stornobelege übersprungen.", skipped_storno)
 
     if args.watch:
         run_watcher(root, db_path, args.settle_seconds)

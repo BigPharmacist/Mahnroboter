@@ -6,7 +6,7 @@
 <div class="sticky-header">
   <header>
     <h1>Apotheken-Rechnungen</h1>
-    <p class="subtitle">Anzeige der zuletzt erfassten Rechnungen aus {{ limit }} Einträgen.</p>
+    <p class="subtitle">Anzeige der {{ limit }} zuletzt erfassten Rechnungen.</p>
   </header>
 
   <div class="scan-controls">
@@ -27,9 +27,9 @@
 
   <section class="controls">
     <div class="filter-grid">
-      <!-- Zeitraum Buttons -->
-      <div class="filter-row">
-        <label class="filter-label">Zeitraum:</label>
+      <!-- Snapshot Buttons -->
+      <div class="filter-row snapshot-row">
+        <label class="filter-label">Snapshot:</label>
         <div class="filter-buttons">
           <a href="{{ url_for('index', q=query, time='all', status=status_filter, email=email_filter, uncollectible=uncollectible_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
              class="filter-btn {% if time_filter == 'all' %}active{% endif %}">

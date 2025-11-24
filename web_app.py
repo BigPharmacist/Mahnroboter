@@ -15,7 +15,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, date
 from pathlib import Path
-from typing import Iterable, List, Optional, Dict, Tuple
+from typing import Iterable, List, Optional, Dict, Tuple, Any
 from collections import defaultdict
 import os
 import smtplib
@@ -69,7 +69,7 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_DB_PATH = BASE_DIR / "invoice_data.db"
 DEFAULT_INVOICE_ROOT = BASE_DIR / "Rechnungen"
-DEFAULT_LIMIT = 500
+DEFAULT_LIMIT = 1000
 
 ASCII_FALLBACK_MAP = str.maketrans({
     "ä": "ae",
@@ -1319,6 +1319,24 @@ def create_app(config: Optional[dict] = None) -> Flask:
     if config:
         app.config.update(config)
 
+    # Configure logging with file handler for errors
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+        # Add file handler for errors
+        file_handler = logging.FileHandler("import_errors.log", encoding="utf-8")
+        file_handler.setLevel(logging.ERROR)
+        file_handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+        )
+        logging.getLogger().addHandler(file_handler)
+
+    # Initialize database tables if they don't exist
+    conn = sqlite3.connect(app.config["DATABASE"])
+    init_db(conn)
+    conn.commit()
+    conn.close()
+
     # Custom filter for German date format
     @app.template_filter('german_date')
     def german_date_filter(iso_date: str) -> str:
@@ -1737,7 +1755,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
         """LetterXpress management page."""
         return render_template("letterxpress.html")
 
-    @app.route("/api/customers/<customer_name>", methods=["PUT"])
+    @app.route("/api/customers/<path:customer_name>", methods=["PUT"])
     def update_customer(customer_name: str) -> Response:
         """Update customer details (salutation, email, notes, never_remind flag, and bank_debit flag)."""
         data = request.get_json()
@@ -1890,9 +1908,9 @@ def create_app(config: Optional[dict] = None) -> Flask:
             ).fetchone()
             latest_snapshot = latest_snapshot_row[0] if latest_snapshot_row and latest_snapshot_row[0] else None
 
-            # Get min and max invoice dates for custom date range helper
+            # Get min and max snapshot dates for custom date range helper
             date_range_row = conn.execute(
-                "SELECT MIN(invoice_date) as min_date, MAX(invoice_date) as max_date FROM invoices"
+                "SELECT MIN(snapshot_date) as min_date, MAX(snapshot_date) as max_date FROM snapshots"
             ).fetchone()
             min_date = date_range_row[0] if date_range_row and date_range_row[0] else None
             max_date = date_range_row[1] if date_range_row and date_range_row[1] else None
@@ -3650,9 +3668,9 @@ def fetch_invoices(
     Fetch invoices with their payment status based on snapshot tracking.
 
     Time filter:
-    - 'all': All time periods
-    - 'current_month': Only invoices from the latest import/snapshot
-    - 'custom': Custom date range using from_month and to_month
+    - 'all': All snapshots
+    - 'current_month': Only invoices present in the latest snapshot
+    - 'custom': Snapshots within the provided month range (YYYY-MM)
 
     Status filter:
     - 'all': All statuses
@@ -3682,6 +3700,24 @@ def fetch_invoices(
 
         latest_snapshot = latest_snapshot_row["latest"]
 
+        # Snapshot filter configuration
+        snapshot_filter_sql = ""
+        snapshot_filter_params: List[str] = []
+        snapshot_filter_active = False
+
+        if time_filter == "current_month":
+            snapshot_filter_sql += " AND s.snapshot_date = ?"
+            snapshot_filter_params.append(latest_snapshot)
+            snapshot_filter_active = True
+        elif time_filter == "custom" and (from_month or to_month):
+            snapshot_filter_active = True
+            if from_month:
+                snapshot_filter_sql += " AND s.snapshot_date >= ?"
+                snapshot_filter_params.append(from_month)
+            if to_month:
+                snapshot_filter_sql += " AND s.snapshot_date <= ?"
+                snapshot_filter_params.append(to_month)
+
         # Build the main query
         sql = """
             WITH invoice_status AS (
@@ -3703,31 +3739,42 @@ def fetch_invoices(
                 JOIN invoice_snapshots isnap ON i.id = isnap.invoice_id
                 JOIN snapshots s ON isnap.snapshot_id = s.id
                 GROUP BY i.id
+            ),
+            snapshot_files AS (
+                SELECT
+                    isnap.invoice_id,
+                    s.snapshot_date,
+                    isnap.file_path,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY isnap.invoice_id
+                        ORDER BY s.snapshot_date DESC
+                    ) as rn
+                FROM invoice_snapshots isnap
+                JOIN snapshots s ON isnap.snapshot_id = s.id
+                WHERE 1=1
+                {snapshot_filter_sql}
             )
             SELECT
                 ist.*,
-                (
-                    SELECT isnap.file_path
-                    FROM invoice_snapshots isnap
-                    JOIN snapshots s_sub ON isnap.snapshot_id = s_sub.id
-                    WHERE isnap.invoice_id = ist.id
-                      AND s_sub.snapshot_date = ist.last_seen_snapshot
-                    ORDER BY s_sub.snapshot_date DESC
-                    LIMIT 1
-                ) as file_path,
+                sf.file_path,
                 CASE
                     WHEN EXISTS (
                         SELECT 1 FROM collective_invoice_items cii
                         WHERE cii.invoice_id = ist.id
                     ) THEN 1
-                    ELSE 0
+                ELSE 0
                 END as in_collective_invoice
             FROM invoice_status ist
+            LEFT JOIN snapshot_files sf ON ist.id = sf.invoice_id AND sf.rn = 1
             LEFT JOIN customer_details cd ON ist.customer_name = cd.customer_name
             WHERE 1=1
         """
 
-        params = [latest_snapshot]
+        # The format string is safe because snapshot_filter_sql is built from static fragments
+        sql = sql.format(snapshot_filter_sql=snapshot_filter_sql)
+
+        params: List[Any] = [latest_snapshot]
+        params.extend(snapshot_filter_params)
 
         # Apply uncollectible filter
         if uncollectible_filter == "hide":
@@ -3746,55 +3793,9 @@ def fetch_invoices(
             pattern = f"%{query}%"
             params.extend([pattern, pattern, pattern])
 
-        # Apply time filter
-        if time_filter == "current_month":
-            # Filter by invoice_date for the month of the newest invoice
-            # Get the latest invoice date
-            latest_invoice_row = conn.execute(
-                "SELECT MAX(invoice_date) as latest FROM invoices"
-            ).fetchone()
-
-            if latest_invoice_row and latest_invoice_row["latest"]:
-                latest_date = latest_invoice_row["latest"]
-                # Extract year and month from latest date (YYYY-MM-DD format)
-                year_month = latest_date[:7]  # YYYY-MM
-                year, month = map(int, year_month.split('-'))
-
-                current_month_start = f"{year}-{month:02d}-01"
-                if month == 12:
-                    next_month_start = f"{year + 1}-01-01"
-                else:
-                    next_month_start = f"{year}-{month + 1:02d}-01"
-
-                sql += " AND ist.invoice_date >= ? AND ist.invoice_date < ?"
-                params.append(current_month_start)
-                params.append(next_month_start)
-        elif time_filter == "custom" and (from_month or to_month):
-            # Custom date range filter based on invoice_date
-            if from_month and to_month:
-                sql += " AND ist.invoice_date >= ? AND ist.invoice_date <= ?"
-                params.append(f"{from_month}-01")  # First day of from_month
-                # Calculate last day of to_month
-                year, month = map(int, to_month.split('-'))
-                if month == 12:
-                    next_month = f"{year+1}-01-01"
-                else:
-                    next_month = f"{year}-{month+1:02d}-01"
-                params.append(next_month)  # Use next month's first day and < comparison
-                # Adjust SQL to use < instead of <=
-                sql = sql.replace(" AND ist.invoice_date <= ?", " AND ist.invoice_date < ?")
-            elif from_month:
-                sql += " AND ist.invoice_date >= ?"
-                params.append(f"{from_month}-01")
-            elif to_month:
-                # Calculate first day of month after to_month
-                year, month = map(int, to_month.split('-'))
-                if month == 12:
-                    next_month = f"{year+1}-01-01"
-                else:
-                    next_month = f"{year}-{month+1:02d}-01"
-                sql += " AND ist.invoice_date < ?"
-                params.append(next_month)
+        # Require the invoice to be present in the requested snapshot range
+        if snapshot_filter_active:
+            sql += " AND sf.invoice_id IS NOT NULL"
 
         # Apply status filter
         if status_filter == "open":

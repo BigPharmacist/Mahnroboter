@@ -144,6 +144,8 @@ header h1 {
 .scrollable-content {
   overflow-y: auto;
   flex: 1;
+  max-height: calc(100vh - 350px);
+  min-height: 400px;
 }
 
 .search-form {
@@ -589,12 +591,42 @@ tr.paid-invoice:hover {
   flex-wrap: wrap;
 }
 
+/* Keep snapshot buttons visible next to the custom range */
+.snapshot-row {
+  align-items: center;
+}
+
+.snapshot-row .filter-buttons {
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  flex-shrink: 0;
+  min-width: 380px;
+}
+
+.snapshot-row .date-range-form-inline {
+  flex: 1 1 360px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  row-gap: 0.25rem;
+}
+
+@media (max-width: 1200px) {
+  .snapshot-row {
+    align-items: flex-start;
+  }
+
+  .snapshot-row .date-range-form-inline {
+    margin-left: 0;
+    justify-content: flex-start;
+  }
+}
+
 .filter-label {
   font-weight: 600;
   font-size: 0.85rem;
   color: #475569;
   white-space: nowrap;
-  min-width: 65px;
+  min-width: 135px;
 }
 
 .date-range-form-inline {
@@ -684,9 +716,11 @@ tr.paid-invoice:hover {
   display: flex;
   gap: 0.35rem;
   align-items: center;
+  flex: 0 0 auto;
 }
 
 .filter-btn {
+  flex: 0 0 190px;
   padding: 0.4rem 0.75rem;
   border-radius: 6px;
   font-size: 0.85rem;
@@ -699,7 +733,6 @@ tr.paid-invoice:hover {
   font-weight: 500;
   display: inline-block;
   text-align: center;
-  min-width: 140px;
 }
 
 .filter-btn:hover {
