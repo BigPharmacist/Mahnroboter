@@ -871,6 +871,9 @@ function updatePDFSelectionCount() {
   }
 }
 
+// Store whether original invoices should be included
+let includeOriginalInvoices = false;
+
 async function showLetterXpressDialog() {
   const selectedCheckboxes = document.querySelectorAll('.pdf-checkbox:checked');
 
@@ -878,6 +881,12 @@ async function showLetterXpressDialog() {
     alert('Bitte wählen Sie mindestens eine Mahnung aus.');
     return;
   }
+
+  // First ask about original invoices
+  includeOriginalInvoices = confirm(
+    'Sollen die zugehörigen Original-Rechnungen als weitere Seiten mitgeschickt werden?\n\n' +
+    'Klicken Sie "OK" um die Rechnungen beizufügen, oder "Abbrechen" um nur die Mahnung zu versenden.'
+  );
 
   // Load current mode and set dropdown
   const mode = await checkLetterXpressMode();
@@ -928,12 +937,14 @@ async function confirmAndSend() {
   const registeredText = registered === 'r1' ? ' + Einschreiben Einwurf' :
                         registered === 'r2' ? ' + Einschreiben Rückschein' : '';
   const apiModeText = apiMode === 'test' ? 'TEST-MODUS (keine echten Briefe)' : '⚠️ LIVE-MODUS (echte Briefe & Kosten!)';
+  const invoicesText = includeOriginalInvoices ? 'Ja' : 'Nein';
 
   const confirmMsg = `${selectedCheckboxes.length} Mahnung(en) versenden?\n\n` +
                      `Optionen:\n` +
                      `- ${colorText}\n` +
                      `- ${modeText}\n` +
-                     `- ${shippingText}${registeredText}\n\n` +
+                     `- ${shippingText}${registeredText}\n` +
+                     `- Original-Rechnungen beifügen: ${invoicesText}\n\n` +
                      `API-Modus: ${apiModeText}`;
 
   if (!confirm(confirmMsg)) {
@@ -962,7 +973,8 @@ async function confirmAndSend() {
         mode: mode,
         shipping: shipping,
         registered: registered,
-        api_mode: apiMode
+        api_mode: apiMode,
+        include_original_invoices: includeOriginalInvoices
       })
     });
 

@@ -1466,13 +1466,13 @@ tr.paid-invoice:hover {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 1.25rem 1.5rem;
+  padding: 0.75rem 1.25rem;
   border-bottom: 1px solid #e4e7eb;
 }
 
 .filter-modal-header h3 {
   margin: 0;
-  font-size: 1.25rem;
+  font-size: 1.1rem;
   color: #123C69;
 }
 
@@ -1489,13 +1489,17 @@ tr.paid-invoice:hover {
 }
 
 .filter-modal-body {
-  padding: 1.5rem;
+  padding: 0.75rem 1.25rem;
 }
 
 .filter-modal-body .filter-row {
-  margin-bottom: 1.25rem;
-  padding-bottom: 1.25rem;
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.5rem;
   border-bottom: 1px solid #f0f0f0;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.75rem;
 }
 
 .filter-modal-body .filter-row:last-child {
@@ -1504,23 +1508,69 @@ tr.paid-invoice:hover {
   border-bottom: none;
 }
 
-.filter-modal-body .filter-row {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
+.filter-modal-body .filter-label {
+  min-width: 120px;
+  font-weight: 500;
+  margin: 0;
 }
 
 .filter-modal-body .filter-buttons {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: 0.35rem;
+  flex: 1;
 }
 
 .filter-modal-body .filter-btn {
   flex: 1 1 auto;
-  min-width: 120px;
-  max-width: 200px;
+  min-width: 100px;
+  max-width: 180px;
   text-align: center;
-  padding: 0.6rem 1rem;
-  font-size: 0.9rem;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  border: none;
+}
+
+.filter-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.6rem 1.25rem;
+  border-top: 1px solid #e4e7eb;
+  background: #f9fafb;
+  border-radius: 0 0 12px 12px;
+}
+
+.filter-reset-btn {
+  padding: 0.4rem 1rem;
+  border: 1px solid #d1d5db;
+  background: white;
+  color: #374151;
+  border-radius: 5px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.filter-reset-btn:hover {
+  background: #f3f4f6;
+  border-color: #9ca3af;
+}
+
+.filter-apply-btn {
+  padding: 0.4rem 1.25rem;
+  border: none;
+  background: #123C69;
+  color: white;
+  border-radius: 5px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.filter-apply-btn:hover {
+  background: #0d2d4f;
 }

@@ -11,7 +11,7 @@
 <section class="stats-and-search">
   <div class="stat-card-compact">
     <div class="stat-label">Anzahl Kunden</div>
-    <div class="stat-value">{{ customers|length }}</div>
+    <div class="stat-value" id="customer-count">{{ customers|length }}</div>
   </div>
   <div class="search-container">
     <input type="text"
@@ -19,6 +19,12 @@
            class="search-input"
            placeholder="🔍 Kunden suchen (Name, Adresse, Email)..."
            onkeyup="filterCustomers()">
+  </div>
+  <div class="filter-toggle">
+    <label class="toggle-label">
+      <input type="checkbox" id="filter-no-salutation" onchange="filterCustomers()">
+      <span>Nur ohne Anrede</span>
+    </label>
   </div>
 </section>
 
@@ -37,15 +43,15 @@
   <table class="customers-table">
     <thead>
       <tr>
-        <th>#</th>
-        <th>Anrede</th>
-        <th>Name</th>
-        <th>Adresse</th>
-        <th>Email</th>
-        <th>Bemerkungen</th>
-        <th>Nie mahnen!</th>
-        <th>Bankeinzug</th>
-        <th>Nur Drucken</th>
+        <th class="sortable" data-sort="index" data-type="number"># <span class="sort-arrow"></span></th>
+        <th class="sortable" data-sort="salutation" data-type="string">Anrede <span class="sort-arrow"></span></th>
+        <th class="sortable sort-asc" data-sort="name" data-type="string">Name <span class="sort-arrow"></span></th>
+        <th class="sortable" data-sort="address" data-type="string">Adresse <span class="sort-arrow"></span></th>
+        <th class="sortable" data-sort="email" data-type="string">Email <span class="sort-arrow"></span></th>
+        <th class="sortable" data-sort="notes" data-type="string">Bemerkungen <span class="sort-arrow"></span></th>
+        <th class="sortable" data-sort="never_remind" data-type="checkbox">Nie mahnen! <span class="sort-arrow"></span></th>
+        <th class="sortable" data-sort="bank_debit" data-type="checkbox">Bankeinzug <span class="sort-arrow"></span></th>
+        <th class="sortable" data-sort="print_only" data-type="checkbox">Nur Drucken <span class="sort-arrow"></span></th>
       </tr>
     </thead>
     <tbody>
@@ -282,10 +288,11 @@ document.addEventListener('DOMContentLoaded', function() {
   printOnlyCheckboxes.forEach(input => input.addEventListener('change', markAsUnsaved));
 });
 
-// Filter customers based on search input
+// Filter customers based on search input and filters
 function filterCustomers() {
   const searchInput = document.getElementById('customer-search');
   const filter = searchInput.value.toLowerCase();
+  const noSalutationFilter = document.getElementById('filter-no-salutation').checked;
   const table = document.querySelector('.customers-table');
   const rows = table.querySelectorAll('tbody tr');
 
@@ -296,8 +303,16 @@ function filterCustomers() {
     const address = row.querySelector('.muted').textContent.toLowerCase();
     const emailInput = row.querySelector('.email-input');
     const email = emailInput ? emailInput.value.toLowerCase() : '';
+    const salutationSelect = row.querySelector('.salutation-input');
+    const hasSalutation = salutationSelect && salutationSelect.value !== '';
 
-    if (customerName.includes(filter) || address.includes(filter) || email.includes(filter)) {
+    // Check search filter
+    const matchesSearch = customerName.includes(filter) || address.includes(filter) || email.includes(filter);
+
+    // Check no-salutation filter
+    const matchesSalutationFilter = !noSalutationFilter || !hasSalutation;
+
+    if (matchesSearch && matchesSalutationFilter) {
       row.style.display = '';
       visibleCount++;
     } else {
@@ -306,14 +321,125 @@ function filterCustomers() {
   });
 
   // Update row numbers for visible rows
-  const visibleRows = table.querySelectorAll('tbody tr[style=""]');
-  visibleRows.forEach((row, index) => {
-    const rowNumber = row.querySelector('.row-number');
-    if (rowNumber) {
-      rowNumber.textContent = index + 1;
+  let index = 1;
+  rows.forEach(row => {
+    if (row.style.display !== 'none') {
+      const rowNumber = row.querySelector('.row-number');
+      if (rowNumber) {
+        rowNumber.textContent = index++;
+      }
+    }
+  });
+
+  // Update customer count
+  document.getElementById('customer-count').textContent = visibleCount;
+}
+
+// Table sorting functionality
+let currentSort = { column: 'name', direction: 'asc' };
+
+function sortTable(column, type) {
+  const table = document.querySelector('.customers-table');
+  const tbody = table.querySelector('tbody');
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+  const headers = table.querySelectorAll('th.sortable');
+
+  // Determine sort direction
+  if (currentSort.column === column) {
+    currentSort.direction = currentSort.direction === 'asc' ? 'desc' : 'asc';
+  } else {
+    currentSort.column = column;
+    currentSort.direction = 'asc';
+  }
+
+  // Update header classes
+  headers.forEach(th => {
+    th.classList.remove('sort-asc', 'sort-desc');
+    if (th.dataset.sort === column) {
+      th.classList.add(currentSort.direction === 'asc' ? 'sort-asc' : 'sort-desc');
+    }
+  });
+
+  // Get value from row based on column
+  function getValue(row, col) {
+    switch(col) {
+      case 'index':
+        return parseInt(row.querySelector('.row-number').textContent) || 0;
+      case 'salutation':
+        return row.querySelector('.salutation-input').value.toLowerCase();
+      case 'name':
+        return row.querySelector('strong').textContent.toLowerCase();
+      case 'address':
+        return row.querySelector('.muted').textContent.toLowerCase();
+      case 'email':
+        return row.querySelector('.email-input').value.toLowerCase();
+      case 'notes':
+        return row.querySelector('.notes-input').value.toLowerCase();
+      case 'never_remind':
+        return row.querySelector('.never-remind-checkbox').checked ? 1 : 0;
+      case 'bank_debit':
+        return row.querySelector('.bank-debit-checkbox').checked ? 1 : 0;
+      case 'print_only':
+        return row.querySelector('.print-only-checkbox').checked ? 1 : 0;
+      default:
+        return '';
+    }
+  }
+
+  // Sort rows
+  rows.sort((a, b) => {
+    let valA = getValue(a, column);
+    let valB = getValue(b, column);
+
+    // For name column, sort by last name (last word)
+    if (column === 'name') {
+      const getLastName = (name) => {
+        const parts = name.trim().split(/\s+/);
+        return parts[parts.length - 1] || '';
+      };
+      valA = getLastName(valA);
+      valB = getLastName(valB);
+    }
+
+    let comparison = 0;
+    if (type === 'number' || type === 'checkbox') {
+      comparison = valA - valB;
+    } else {
+      comparison = valA.localeCompare(valB, 'de');
+    }
+
+    return currentSort.direction === 'asc' ? comparison : -comparison;
+  });
+
+  // Re-append rows in sorted order
+  rows.forEach(row => tbody.appendChild(row));
+
+  // Update row numbers
+  updateRowNumbers();
+}
+
+function updateRowNumbers() {
+  const table = document.querySelector('.customers-table');
+  const rows = table.querySelectorAll('tbody tr');
+  let index = 1;
+  rows.forEach(row => {
+    if (row.style.display !== 'none') {
+      const rowNumber = row.querySelector('.row-number');
+      if (rowNumber) {
+        rowNumber.textContent = index++;
+      }
     }
   });
 }
+
+// Add click handlers to sortable headers
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('th.sortable').forEach(th => {
+    th.addEventListener('click', function() {
+      sortTable(this.dataset.sort, this.dataset.type);
+    });
+  });
+});
 </script>
 
 <style>
@@ -388,6 +514,31 @@ function filterCustomers() {
   box-shadow: 0 0 0 3px rgba(18, 60, 105, 0.1);
 }
 
+.filter-toggle {
+  display: flex;
+  align-items: center;
+  background: white;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.toggle-label input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
 .stat-label {
   font-size: 0.875rem;
   color: #666;
@@ -429,6 +580,45 @@ function filterCustomers() {
   color: #333;
   border-bottom: 2px solid #e0e0e0;
   font-size: 0.85rem;
+}
+
+.customers-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.customers-table th.sortable:hover {
+  background: #e9ecef;
+}
+
+.customers-table th.sortable .sort-arrow {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-left: 4px;
+  vertical-align: middle;
+  opacity: 0.3;
+}
+
+.customers-table th.sortable .sort-arrow::after {
+  content: "↕";
+  font-size: 0.75rem;
+}
+
+.customers-table th.sortable.sort-asc .sort-arrow::after {
+  content: "▲";
+  opacity: 1;
+}
+
+.customers-table th.sortable.sort-desc .sort-arrow::after {
+  content: "▼";
+  opacity: 1;
+}
+
+.customers-table th.sortable.sort-asc .sort-arrow,
+.customers-table th.sortable.sort-desc .sort-arrow {
+  opacity: 1;
 }
 
 .customers-table td {

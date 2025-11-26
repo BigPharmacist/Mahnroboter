@@ -83,7 +83,14 @@ ASCII_FALLBACK_MAP = str.maketrans({
 
 SORT_COLUMN_MAP = {
     "date": "ist.invoice_date",
-    "name": "LOWER(ist.customer_name)",
+    # Sort by last name (last word of customer_name)
+    "name": """LOWER(
+        CASE
+            WHEN INSTR(ist.customer_name, ' ') > 0
+            THEN TRIM(SUBSTR(ist.customer_name, INSTR(ist.customer_name, ' ') + 1))
+            ELSE ist.customer_name
+        END
+    )""",
     "address": "LOWER(ist.customer_address)",
     "number": "COALESCE(ist.invoice_number, '')",
     "amount": "ist.amount_cents",
@@ -2873,7 +2880,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     })
 
                 # Generate PDFs for each group
-                root = Path(app.config["INVOICE_ROOT"])
+                # Use BASE_DIR since file_path already contains "Rechnungen/" prefix
+                root = BASE_DIR
 
                 for (customer_name, customer_address, reminder_level), invoice_list in grouped.items():
                     # Get salutation for customer
@@ -3579,6 +3587,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
             shipping = data.get("shipping", "national")  # Default: Germany
             registered = data.get("registered")  # Default: None (no registered mail)
             api_mode = data.get("api_mode")  # Optional: override API mode (test/live)
+            include_original_invoices = data.get("include_original_invoices", True)  # Include original invoices as additional pages
 
             # Validate options
             if color not in ["1", "4"]:
@@ -3647,11 +3656,35 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     # Format: Mahnung_CustomerName_2025-01-15.pdf or similar
                     customer_name = filename.replace(".pdf", "").split("_")[1] if "_" in filename else "Kunde"
 
+                    # Determine which PDF to send
+                    pdf_to_send = pdf_path
+                    temp_file = None
+
+                    if not include_original_invoices:
+                        # Extract only the reminder letter (first 2 pages) without original invoices
+                        try:
+                            reader = PdfReader(pdf_path)
+                            if len(reader.pages) > 2:
+                                writer = PdfWriter()
+                                # Add only the first 2 pages (the reminder letter)
+                                for i in range(min(2, len(reader.pages))):
+                                    writer.add_page(reader.pages[i])
+
+                                # Create temporary file for the letter-only PDF
+                                temp_file = tempfile.NamedTemporaryFile(suffix='.pdf', delete=False)
+                                writer.write(temp_file)
+                                temp_file.close()
+                                pdf_to_send = Path(temp_file.name)
+                                logging.info(f"Created letter-only PDF (2 pages) for {filename}")
+                        except Exception as e:
+                            logging.warning(f"Could not extract letter-only PDF for {filename}: {e}. Using full PDF.")
+
                     # Submit to LetterXpress
                     logging.info(f"Submitting {filename} to LetterXpress ({mode.upper()} mode) - "
-                               f"color={color}, print_mode={print_mode}, shipping={shipping}, registered={registered}")
+                               f"color={color}, print_mode={print_mode}, shipping={shipping}, registered={registered}, "
+                               f"include_invoices={include_original_invoices}")
                     result = lx_client.submit_letter(
-                        pdf_path=pdf_path,
+                        pdf_path=pdf_to_send,
                         color=color,
                         mode=print_mode,
                         shipping=shipping,
@@ -3659,6 +3692,13 @@ def create_app(config: Optional[dict] = None) -> Flask:
                         notice=f"Mahnung {customer_name}",
                         filename_original=filename
                     )
+
+                    # Clean up temporary file if created
+                    if temp_file:
+                        try:
+                            Path(temp_file.name).unlink()
+                        except Exception:
+                            pass
 
                     job_id = result.get("id")
                     price = result.get("price", 0.0)
@@ -4179,6 +4219,14 @@ def fetch_all_customers(database_path: str) -> List[Dict]:
             "invoice_count": row["invoice_count"],
             "total_amount_eur": row["total_amount_cents"] / 100.0 if row["total_amount_cents"] else 0.0,
         })
+
+    # Sort by last name (last word of customer_name), case-insensitive
+    def get_last_name(customer: Dict) -> str:
+        name = customer.get("customer_name", "")
+        parts = name.strip().split()
+        return parts[-1].lower() if parts else ""
+
+    customers.sort(key=get_last_name)
 
     return customers
 

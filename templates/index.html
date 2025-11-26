@@ -101,18 +101,18 @@
           <div class="filter-row">
             <label class="filter-label">Rechnungsdatum:</label>
             <div class="filter-buttons">
-              <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, uncollectible=uncollectible_filter, invoice_date='all', grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
-                 class="filter-btn {% if invoice_date_filter == 'all' %}active{% endif %}">
+              <button type="button" class="filter-btn {% if invoice_date_filter == 'all' %}active{% endif %}"
+                      data-filter="invoice_date" data-value="all">
                 📋 Alle
-              </a>
-              <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, uncollectible=uncollectible_filter, invoice_date='current_month', grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
-                 class="filter-btn {% if invoice_date_filter == 'current_month' %}active{% endif %}">
+              </button>
+              <button type="button" class="filter-btn {% if invoice_date_filter == 'current_month' %}active{% endif %}"
+                      data-filter="invoice_date" data-value="current_month">
                 📅 Aktueller Monat
-              </a>
-              <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, uncollectible=uncollectible_filter, invoice_date='previous_month', grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
-                 class="filter-btn {% if invoice_date_filter == 'previous_month' %}active{% endif %}">
+              </button>
+              <button type="button" class="filter-btn {% if invoice_date_filter == 'previous_month' %}active{% endif %}"
+                      data-filter="invoice_date" data-value="previous_month">
                 📆 Vormonat
-              </a>
+              </button>
             </div>
           </div>
 
@@ -120,18 +120,18 @@
           <div class="filter-row">
             <label class="filter-label">Status:</label>
             <div class="filter-buttons">
-              <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status='all', email=email_filter, uncollectible=uncollectible_filter, invoice_date=invoice_date_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
-                 class="filter-btn {% if status_filter == 'all' %}active{% endif %}">
+              <button type="button" class="filter-btn {% if status_filter == 'all' %}active{% endif %}"
+                      data-filter="status" data-value="all">
                 📋 Alle
-              </a>
-              <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status='open', email=email_filter, uncollectible=uncollectible_filter, invoice_date=invoice_date_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
-                 class="filter-btn {% if status_filter == 'open' %}active{% endif %}">
+              </button>
+              <button type="button" class="filter-btn {% if status_filter == 'open' %}active{% endif %}"
+                      data-filter="status" data-value="open">
                 ⚠ Nur Offene
-              </a>
-              <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status='paid', email=email_filter, uncollectible=uncollectible_filter, invoice_date=invoice_date_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
-                 class="filter-btn {% if status_filter == 'paid' %}active{% endif %}">
+              </button>
+              <button type="button" class="filter-btn {% if status_filter == 'paid' %}active{% endif %}"
+                      data-filter="status" data-value="paid">
                 ✓ Nur Bezahlte
-              </a>
+              </button>
             </div>
           </div>
 
@@ -139,18 +139,18 @@
           <div class="filter-row">
             <label class="filter-label">Email:</label>
             <div class="filter-buttons">
-              <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email='all', uncollectible=uncollectible_filter, invoice_date=invoice_date_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
-                 class="filter-btn {% if email_filter == 'all' %}active{% endif %}">
+              <button type="button" class="filter-btn {% if email_filter == 'all' %}active{% endif %}"
+                      data-filter="email" data-value="all">
                 📋 Alle
-              </a>
-              <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email='with_email', uncollectible=uncollectible_filter, invoice_date=invoice_date_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
-                 class="filter-btn {% if email_filter == 'with_email' %}active{% endif %}">
+              </button>
+              <button type="button" class="filter-btn {% if email_filter == 'with_email' %}active{% endif %}"
+                      data-filter="email" data-value="with_email">
                 ✉ Mit Email
-              </a>
-              <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email='without_email', uncollectible=uncollectible_filter, invoice_date=invoice_date_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
-                 class="filter-btn {% if email_filter == 'without_email' %}active{% endif %}">
+              </button>
+              <button type="button" class="filter-btn {% if email_filter == 'without_email' %}active{% endif %}"
+                      data-filter="email" data-value="without_email">
                 ✗ Ohne Email
-              </a>
+              </button>
             </div>
           </div>
 
@@ -158,20 +158,24 @@
           <div class="filter-row">
             <label class="filter-label">Uneinbringbar:</label>
             <div class="filter-buttons">
-              <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, uncollectible='hide', invoice_date=invoice_date_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
-                 class="filter-btn {% if uncollectible_filter == 'hide' %}active{% endif %}">
+              <button type="button" class="filter-btn {% if uncollectible_filter == 'hide' %}active{% endif %}"
+                      data-filter="uncollectible" data-value="hide">
                 🚫 Ausblenden
-              </a>
-              <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, uncollectible='show', invoice_date=invoice_date_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
-                 class="filter-btn {% if uncollectible_filter == 'show' %}active{% endif %}">
+              </button>
+              <button type="button" class="filter-btn {% if uncollectible_filter == 'show' %}active{% endif %}"
+                      data-filter="uncollectible" data-value="show">
                 👁 Anzeigen
-              </a>
-              <a href="{{ url_for('index', q=query, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, uncollectible='only', invoice_date=invoice_date_filter, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}"
-                 class="filter-btn {% if uncollectible_filter == 'only' %}active{% endif %}">
+              </button>
+              <button type="button" class="filter-btn {% if uncollectible_filter == 'only' %}active{% endif %}"
+                      data-filter="uncollectible" data-value="only">
                 ⚠️ Nur Uneinbringbare
-              </a>
+              </button>
             </div>
           </div>
+        </div>
+        <div class="filter-modal-footer">
+          <button type="button" class="filter-reset-btn" onclick="resetFilters()">Zurücksetzen</button>
+          <button type="button" class="filter-apply-btn" onclick="applyFilters()">Anwenden</button>
         </div>
       </div>
     </div>
@@ -359,6 +363,22 @@
   </section>
 
   <script>
+    // Filter state - initialized with current filter values
+    const filterState = {
+      invoice_date: '{{ invoice_date_filter }}',
+      status: '{{ status_filter }}',
+      email: '{{ email_filter }}',
+      uncollectible: '{{ uncollectible_filter }}'
+    };
+
+    // Default filter values
+    const defaultFilters = {
+      invoice_date: 'all',
+      status: 'open',
+      email: 'all',
+      uncollectible: 'hide'
+    };
+
     // Filter Modal Toggle
     function toggleFilterModal() {
       const modal = document.getElementById('filterModal');
@@ -372,6 +392,54 @@
         modal.classList.remove('show');
       }
     });
+
+    // Handle filter button clicks
+    document.querySelectorAll('#filterModal .filter-btn[data-filter]').forEach(btn => {
+      btn.addEventListener('click', function() {
+        const filterType = this.dataset.filter;
+        const filterValue = this.dataset.value;
+
+        // Update state
+        filterState[filterType] = filterValue;
+
+        // Update active class for this filter group
+        const siblingBtns = this.closest('.filter-buttons').querySelectorAll('.filter-btn');
+        siblingBtns.forEach(b => b.classList.remove('active'));
+        this.classList.add('active');
+      });
+    });
+
+    // Apply filters and navigate
+    function applyFilters() {
+      const params = new URLSearchParams(window.location.search);
+
+      // Update filter params
+      params.set('invoice_date', filterState.invoice_date);
+      params.set('status', filterState.status);
+      params.set('email', filterState.email);
+      params.set('uncollectible', filterState.uncollectible);
+
+      // Navigate to new URL
+      window.location.href = '{{ url_for("index") }}?' + params.toString();
+    }
+
+    // Reset filters to defaults
+    function resetFilters() {
+      // Reset state to defaults
+      Object.assign(filterState, defaultFilters);
+
+      // Update button states visually
+      document.querySelectorAll('#filterModal .filter-btn[data-filter]').forEach(btn => {
+        const filterType = btn.dataset.filter;
+        const filterValue = btn.dataset.value;
+
+        if (defaultFilters[filterType] === filterValue) {
+          btn.classList.add('active');
+        } else {
+          btn.classList.remove('active');
+        }
+      });
+    }
 
     // Convert MM.JJJJ to YYYY-MM before form submission
     document.querySelector('.date-range-form-inline').addEventListener('submit', function(e) {
