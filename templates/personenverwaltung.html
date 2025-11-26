@@ -45,6 +45,7 @@
         <th>Bemerkungen</th>
         <th>Nie mahnen!</th>
         <th>Bankeinzug</th>
+        <th>Nur Drucken</th>
       </tr>
     </thead>
     <tbody>
@@ -90,6 +91,12 @@
                  data-customer="{{ customer.customer_name }}"
                  {% if customer.bank_debit %}checked{% endif %}>
         </td>
+        <td class="text-center">
+          <input type="checkbox"
+                 class="print-only-checkbox"
+                 data-customer="{{ customer.customer_name }}"
+                 {% if customer.print_only %}checked{% endif %}>
+        </td>
       </tr>
       {% endfor %}
     </tbody>
@@ -127,6 +134,7 @@ async function saveAllChanges() {
     const notes = row.querySelector('.notes-input').value;
     const neverRemind = row.querySelector('.never-remind-checkbox').checked;
     const bankDebit = row.querySelector('.bank-debit-checkbox').checked;
+    const printOnly = row.querySelector('.print-only-checkbox').checked;
 
     try {
       const response = await fetch(`/api/customers/${encodeURIComponent(customerName)}`, {
@@ -139,7 +147,8 @@ async function saveAllChanges() {
           email: email,
           notes: notes,
           never_remind: neverRemind,
-          bank_debit: bankDebit
+          bank_debit: bankDebit,
+          print_only: printOnly
         })
       });
 
@@ -263,12 +272,14 @@ document.addEventListener('DOMContentLoaded', function() {
   const notesInputs = document.querySelectorAll('.notes-input');
   const neverRemindCheckboxes = document.querySelectorAll('.never-remind-checkbox');
   const bankDebitCheckboxes = document.querySelectorAll('.bank-debit-checkbox');
+  const printOnlyCheckboxes = document.querySelectorAll('.print-only-checkbox');
 
   salutationInputs.forEach(input => input.addEventListener('change', markAsUnsaved));
   emailInputs.forEach(input => input.addEventListener('input', markAsUnsaved));
   notesInputs.forEach(input => input.addEventListener('input', markAsUnsaved));
   neverRemindCheckboxes.forEach(input => input.addEventListener('change', markAsUnsaved));
   bankDebitCheckboxes.forEach(input => input.addEventListener('change', markAsUnsaved));
+  printOnlyCheckboxes.forEach(input => input.addEventListener('change', markAsUnsaved));
 });
 
 // Filter customers based on search input
@@ -394,8 +405,15 @@ function filterCustomers() {
   background: white;
   border-radius: 8px;
   box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-  overflow-x: auto;
+  overflow: auto;
   margin: 2rem 0;
+  max-height: calc(100vh - 280px);
+}
+
+.customers-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 10;
 }
 
 .customers-table {
@@ -454,7 +472,8 @@ function filterCustomers() {
 }
 
 .never-remind-checkbox,
-.bank-debit-checkbox {
+.bank-debit-checkbox,
+.print-only-checkbox {
   width: 20px;
   height: 20px;
   cursor: pointer;

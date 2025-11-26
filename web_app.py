@@ -1247,6 +1247,197 @@ def create_sepa_mandate_pdf(
     return buffer.getvalue()
 
 
+def create_email_consent_form_pdf(customer_name: str) -> bytes:
+    """
+    Create an email consent form PDF with customer name filled in.
+
+    Args:
+        customer_name: Name of the customer
+
+    Returns:
+        PDF bytes
+    """
+    from reportlab.lib.colors import HexColor
+
+    # Apotheken-Daten
+    APOTHEKE_NAME = "Apotheke am Damm"
+    APOTHEKE_STRASSE = "Am Damm 17"
+    APOTHEKE_PLZ_ORT = "55232 Alzey"
+    APOTHEKE_TELEFON = "06731-548846"
+    APOTHEKE_EMAIL = "info@apothekeamdamm.de"
+
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+
+    # Farben
+    primary_color = HexColor("#123C69")
+    black = HexColor("#000000")
+
+    # Startposition oben
+    y_pos = height - 25*mm
+
+    # ===== KOPFBEREICH =====
+    c.setFillColor(primary_color)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(20*mm, y_pos, APOTHEKE_NAME)
+
+    y_pos -= 6*mm
+    c.setFillColor(black)
+    c.setFont("Helvetica", 9)
+    c.drawString(20*mm, y_pos, f"{APOTHEKE_STRASSE} | {APOTHEKE_PLZ_ORT}")
+
+    y_pos -= 18*mm
+
+    # ===== ÜBERSCHRIFT =====
+    c.setFillColor(primary_color)
+    c.setFont("Helvetica", 11)
+    c.drawCentredString(width/2, y_pos, "Ihre Rechnungen direkt per E-Mail")
+    y_pos -= 8*mm
+    c.setFont("Helvetica-Bold", 14)
+    c.drawCentredString(width/2, y_pos, "Einwilligung zum elektronischen Rechnungsversand")
+
+    y_pos -= 15*mm
+
+    # ===== EINLEITUNGSTEXT =====
+    c.setFillColor(black)
+    c.setFont("Helvetica", 10)
+
+    intro_text = [
+        "Um Ressourcen zu schonen und Ihnen Ihre Rechnungen schneller zukommen zu lassen,",
+        "bieten wir Ihnen gerne die Möglichkeit an, alle Dokumente (Rechnungen,",
+        "Zahlungserinnerungen und Mahnungen) per E-Mail zu erhalten."
+    ]
+
+    for line in intro_text:
+        c.drawString(20*mm, y_pos, line)
+        y_pos -= 5*mm
+
+    y_pos -= 8*mm
+
+    # ===== VORTEILE-BOX =====
+    box_height = 30*mm
+    c.setFillColor(HexColor("#f0f4f8"))
+    c.rect(20*mm, y_pos - box_height + 5*mm, 170*mm, box_height, stroke=0, fill=1)
+
+    c.setFillColor(primary_color)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(25*mm, y_pos, "Ihre Vorteile:")
+
+    y_pos -= 7*mm
+    c.setFillColor(black)
+    c.setFont("Helvetica", 10)
+
+    vorteile = [
+        "Schnellerer Erhalt Ihrer Rechnungen",
+        "Umweltfreundlich durch Papiereinsparung",
+        "Übersichtliche digitale Ablage möglich"
+    ]
+
+    for vorteil in vorteile:
+        c.drawString(30*mm, y_pos, f"• {vorteil}")
+        y_pos -= 5.5*mm
+
+    y_pos -= 10*mm
+
+    # ===== DATENSCHUTZINFORMATION =====
+    c.setFillColor(primary_color)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(20*mm, y_pos, "Datenschutzinformation")
+
+    y_pos -= 7*mm
+    c.setFillColor(black)
+    c.setFont("Helvetica", 9)
+
+    datenschutz_text = [
+        "Mit Ihrer Einwilligung verarbeiten wir Ihre E-Mail-Adresse zum Zweck des Versands von",
+        "Rechnungen, Zahlungserinnerungen und Mahnungen. Die Rechtsgrundlage für diese",
+        "Verarbeitung ist Ihre Einwilligung gemäß Art. 6 Abs. 1 lit. a DSGVO.",
+        "",
+        "Diese Einwilligung ist freiwillig. Sie können sie jederzeit ohne Angabe von Gründen",
+        f"widerrufen, z.B. per E-Mail an {APOTHEKE_EMAIL} oder schriftlich an unsere",
+        "Adresse. Der Widerruf berührt nicht die Rechtmäßigkeit der bis dahin erfolgten",
+        "Verarbeitung. Nach einem Widerruf erhalten Sie Ihre Rechnungen wieder per Post."
+    ]
+
+    for line in datenschutz_text:
+        c.drawString(20*mm, y_pos, line)
+        y_pos -= 4.5*mm
+
+    y_pos -= 12*mm
+
+    # ===== EINWILLIGUNGSERKLÄRUNG =====
+    c.setStrokeColor(black)
+    c.rect(20*mm, y_pos - 3*mm, 5*mm, 5*mm, stroke=1, fill=0)
+
+    c.setFont("Helvetica-Bold", 10)
+    einwilligung_text = f"Ja, ich willige ein, dass die {APOTHEKE_NAME} mir Rechnungen,"
+    c.drawString(28*mm, y_pos, einwilligung_text)
+    y_pos -= 5*mm
+    c.drawString(28*mm, y_pos, "Zahlungserinnerungen und Mahnungen per E-Mail zusendet.")
+
+    y_pos -= 18*mm
+
+    # ===== EINGABEFELDER =====
+    c.setFont("Helvetica", 9)
+    field_width = 120*mm
+
+    # Name, Vorname
+    c.drawString(20*mm, y_pos, "Name, Vorname:")
+    c.line(55*mm, y_pos - 1*mm, 55*mm + field_width, y_pos - 1*mm)
+    # Kundenname vorausfüllen
+    if customer_name:
+        c.setFont("Helvetica", 10)
+        c.drawString(56*mm, y_pos, customer_name)
+        c.setFont("Helvetica", 9)
+    y_pos -= 12*mm
+
+    # E-Mail-Adresse
+    c.drawString(20*mm, y_pos, "E-Mail-Adresse:")
+    c.line(55*mm, y_pos - 1*mm, 55*mm + field_width, y_pos - 1*mm)
+    y_pos -= 12*mm
+
+    # Ort, Datum
+    c.drawString(20*mm, y_pos, "Ort, Datum:")
+    c.line(45*mm, y_pos - 1*mm, 45*mm + 60*mm, y_pos - 1*mm)
+    y_pos -= 18*mm
+
+    # Unterschrift
+    c.drawString(20*mm, y_pos, "Unterschrift:")
+    c.line(45*mm, y_pos - 1*mm, 45*mm + 80*mm, y_pos - 1*mm)
+
+    y_pos -= 30*mm
+
+    # ===== TRENNLINIE =====
+    c.setStrokeColor(HexColor("#cccccc"))
+    c.setDash(2, 2)
+    c.line(20*mm, y_pos, width - 20*mm, y_pos)
+    c.setDash()
+    c.setStrokeColor(black)
+
+    y_pos -= 15*mm
+
+    # ===== FUSSBEREICH =====
+    c.setFillColor(primary_color)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(20*mm, y_pos, APOTHEKE_NAME)
+
+    y_pos -= 5*mm
+    c.setFillColor(black)
+    c.setFont("Helvetica", 9)
+    c.drawString(20*mm, y_pos, APOTHEKE_STRASSE)
+    y_pos -= 4*mm
+    c.drawString(20*mm, y_pos, APOTHEKE_PLZ_ORT)
+    y_pos -= 6*mm
+    c.drawString(20*mm, y_pos, f"Telefon: {APOTHEKE_TELEFON}")
+    y_pos -= 4*mm
+    c.drawString(20*mm, y_pos, f"E-Mail: {APOTHEKE_EMAIL}")
+
+    c.save()
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 @dataclass
 class InvoiceRow:
     id: int
@@ -1757,7 +1948,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
     @app.route("/api/customers/<path:customer_name>", methods=["PUT"])
     def update_customer(customer_name: str) -> Response:
-        """Update customer details (salutation, email, notes, never_remind flag, and bank_debit flag)."""
+        """Update customer details (salutation, email, notes, never_remind, bank_debit, print_only flags)."""
         data = request.get_json()
 
         if not data:
@@ -1768,6 +1959,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
         notes = data.get("notes", "")
         never_remind = 1 if data.get("never_remind", False) else 0
         bank_debit = 1 if data.get("bank_debit", False) else 0
+        print_only = 1 if data.get("print_only", False) else 0
 
         try:
             with sqlite3.connect(app.config["DATABASE"]) as conn:
@@ -1775,17 +1967,18 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 # Insert or update customer details
                 conn.execute(
                     """
-                    INSERT INTO customer_details (customer_name, salutation, email, notes, never_remind, bank_debit, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+                    INSERT INTO customer_details (customer_name, salutation, email, notes, never_remind, bank_debit, print_only, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
                     ON CONFLICT(customer_name) DO UPDATE SET
                         salutation = excluded.salutation,
                         email = excluded.email,
                         notes = excluded.notes,
                         never_remind = excluded.never_remind,
                         bank_debit = excluded.bank_debit,
+                        print_only = excluded.print_only,
                         updated_at = datetime('now', 'localtime')
                     """,
-                    (customer_name, salutation, email, notes, never_remind, bank_debit)
+                    (customer_name, salutation, email, notes, never_remind, bank_debit, print_only)
                 )
                 conn.commit()
 
@@ -1876,6 +2069,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
         status_filter = request.args.get("status", "open")  # 'all', 'open', or 'paid'
         email_filter = request.args.get("email", "all")  # 'all', 'with_email', or 'without_email'
         uncollectible_filter = request.args.get("uncollectible", "hide")  # 'hide', 'show', or 'only'
+        invoice_date_filter = request.args.get("invoice_date", "all")  # 'all', 'current_month', or 'previous_month'
 
         # Custom date range parameters (format: YYYY-MM)
         from_month = request.args.get("from_month", "")
@@ -1898,6 +2092,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
             uncollectible_filter,
             sort_by,
             sort_direction,
+            invoice_date_filter,
         )
         total_amount = sum(row.amount_eur for row in invoices)
 
@@ -1933,6 +2128,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 status_filter=status_filter,
                 email_filter=email_filter,
                 uncollectible_filter=uncollectible_filter,
+                invoice_date_filter=invoice_date_filter,
                 from_month=from_month,
                 to_month=to_month,
                 latest_snapshot=latest_snapshot,
@@ -1954,6 +2150,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 status_filter=status_filter,
                 email_filter=email_filter,
                 uncollectible_filter=uncollectible_filter,
+                invoice_date_filter=invoice_date_filter,
                 from_month=from_month,
                 to_month=to_month,
                 latest_snapshot=latest_snapshot,
@@ -2053,6 +2250,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
         time_filter = request.args.get("time", "all")
         status_filter = request.args.get("status", "open")
         email_filter = request.args.get("email", "all")
+        uncollectible_filter = request.args.get("uncollectible", "hide")
+        invoice_date_filter = request.args.get("invoice_date", "all")
         from_month = request.args.get("from_month", "")
         to_month = request.args.get("to_month", "")
         sort_by, sort_direction = normalize_sort_params(
@@ -2071,6 +2270,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
             uncollectible_filter,
             sort_by,
             sort_direction,
+            invoice_date_filter,
         )
         return jsonify(
             {
@@ -2238,10 +2438,11 @@ def create_app(config: Optional[dict] = None) -> Flask:
         status_filter = request.args.get("status", "open")
         email_filter = request.args.get("email", "all")
         uncollectible_filter = request.args.get("uncollectible", "hide")
+        invoice_date_filter = request.args.get("invoice_date", "all")
         from_month = request.args.get("from_month", "")
         to_month = request.args.get("to_month", "")
 
-        invoices = fetch_invoices(app.config["DATABASE"], query, limit, time_filter, status_filter, from_month, to_month, email_filter, uncollectible_filter)
+        invoices = fetch_invoices(app.config["DATABASE"], query, limit, time_filter, status_filter, from_month, to_month, email_filter, uncollectible_filter, invoice_date_filter=invoice_date_filter)
 
         if not invoices:
             return jsonify({"error": "Keine Rechnungen zum Drucken gefunden"}), 404
@@ -2298,12 +2499,13 @@ def create_app(config: Optional[dict] = None) -> Flask:
         status_filter = request.args.get("status", "open")
         email_filter = request.args.get("email", "all")
         uncollectible_filter = request.args.get("uncollectible", "hide")
+        invoice_date_filter = request.args.get("invoice_date", "all")
         from_month = request.args.get("from_month", "")
         to_month = request.args.get("to_month", "")
 
         def generate():
             try:
-                invoices = fetch_invoices(app.config["DATABASE"], query, limit, time_filter, status_filter, from_month, to_month, email_filter, uncollectible_filter)
+                invoices = fetch_invoices(app.config["DATABASE"], query, limit, time_filter, status_filter, from_month, to_month, email_filter, uncollectible_filter, invoice_date_filter=invoice_date_filter)
 
                 if not invoices:
                     yield f"data: {json.dumps({'type': 'error', 'message': 'Keine Rechnungen zum Versenden gefunden'})}\n\n"
@@ -2805,7 +3007,9 @@ def create_app(config: Optional[dict] = None) -> Flask:
             to_month = request.args.get("to_month", "")
             email_filter = request.args.get("email", "all")
             uncollectible_filter = request.args.get("uncollectible", "hide")
+            invoice_date_filter = request.args.get("invoice_date", "all")
             include_sepa = request.args.get("include_sepa", "false").lower() == "true"
+            include_email_consent = request.args.get("include_email_consent", "false").lower() == "true"
 
             # First, get invoices based on user filters to determine which customers to process
             filtered_invoices = fetch_invoices(
@@ -2817,7 +3021,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 from_month,
                 to_month,
                 email_filter,
-                uncollectible_filter
+                uncollectible_filter,
+                invoice_date_filter=invoice_date_filter
             )
 
             if not filtered_invoices:
@@ -2855,7 +3060,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
                 count = 0
                 total_invoices = 0
-                root = Path(app.config["INVOICE_ROOT"])
+                # Use BASE_DIR since file_path already contains "Rechnungen/" prefix
+                root = BASE_DIR
 
                 for customer_name, customer_invoice_list in customer_invoices.items():
                     # Sort by date descending to get latest invoices first
@@ -2943,6 +3149,15 @@ def create_app(config: Optional[dict] = None) -> Flask:
                         )
                         sepa_mandate_pdf = PdfReader(io.BytesIO(sepa_mandate_bytes))
                         for page in sepa_mandate_pdf.pages:
+                            pdf_merger.add_page(page)
+
+                    # Add email consent form if requested
+                    if include_email_consent:
+                        email_consent_bytes = create_email_consent_form_pdf(
+                            customer_name=customer_name
+                        )
+                        email_consent_pdf = PdfReader(io.BytesIO(email_consent_bytes))
+                        for page in email_consent_pdf.pages:
                             pdf_merger.add_page(page)
 
                     # Save combined PDF
@@ -3663,11 +3878,12 @@ def fetch_invoices(
     uncollectible_filter: str = "hide",
     sort_by: str = "date",
     sort_direction: str = "desc",
+    invoice_date_filter: str = "all",
 ) -> List[InvoiceRow]:
     """
     Fetch invoices with their payment status based on snapshot tracking.
 
-    Time filter:
+    Time filter (Snapshot):
     - 'all': All snapshots
     - 'current_month': Only invoices present in the latest snapshot
     - 'custom': Snapshots within the provided month range (YYYY-MM)
@@ -3681,6 +3897,11 @@ def fetch_invoices(
     - 'hide': Hide uncollectible invoices (default)
     - 'show': Show uncollectible invoices
     - 'only': Show only uncollectible invoices
+
+    Invoice date filter (Rechnungsdatum):
+    - 'all': All invoice dates
+    - 'current_month': Invoices from current calendar month
+    - 'previous_month': Invoices from previous calendar month
 
     Custom date range:
     - from_month: Start month in YYYY-MM format
@@ -3809,6 +4030,14 @@ def fetch_invoices(
         elif email_filter == "without_email":
             sql += " AND (cd.email IS NULL OR cd.email = '')"
 
+        # Apply invoice date filter (Rechnungsdatum)
+        if invoice_date_filter == "current_month":
+            # Current calendar month
+            sql += " AND strftime('%Y-%m', ist.invoice_date) = strftime('%Y-%m', 'now')"
+        elif invoice_date_filter == "previous_month":
+            # Previous calendar month
+            sql += " AND strftime('%Y-%m', ist.invoice_date) = strftime('%Y-%m', 'now', '-1 month')"
+
         sort_key, sort_dir = normalize_sort_params(sort_by, sort_direction)
         order_expression = SORT_COLUMN_MAP[sort_key]
 
@@ -3925,11 +4154,12 @@ def fetch_all_customers(database_path: str) -> List[Dict]:
                 cd.notes,
                 cd.never_remind,
                 cd.bank_debit,
+                cd.print_only,
                 COUNT(DISTINCT i.id) as invoice_count,
                 SUM(i.amount_cents) as total_amount_cents
             FROM invoices i
             LEFT JOIN customer_details cd ON i.customer_name = cd.customer_name
-            GROUP BY i.customer_name, i.customer_address, cd.salutation, cd.email, cd.notes, cd.never_remind, cd.bank_debit
+            GROUP BY i.customer_name, i.customer_address, cd.salutation, cd.email, cd.notes, cd.never_remind, cd.bank_debit, cd.print_only
             ORDER BY i.customer_name
         """
 
@@ -3945,6 +4175,7 @@ def fetch_all_customers(database_path: str) -> List[Dict]:
             "notes": row["notes"] or "",
             "never_remind": row["never_remind"] or 0,
             "bank_debit": row["bank_debit"] or 0,
+            "print_only": row["print_only"] or 0,
             "invoice_count": row["invoice_count"],
             "total_amount_eur": row["total_amount_cents"] / 100.0 if row["total_amount_cents"] else 0.0,
         })
@@ -4025,7 +4256,7 @@ def fetch_invoices_with_reminders(database_path: str, filter_reminded: Optional[
                 SELECT
                     ist.id,
                     CASE
-                        WHEN isnap.file_path IS NOT NULL THEN 'Rechnungen/' || isnap.file_path
+                        WHEN isnap.file_path IS NOT NULL THEN isnap.file_path
                         ELSE NULL
                     END as file_path
                 FROM invoice_status ist

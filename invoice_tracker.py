@@ -185,6 +185,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             notes TEXT,
             never_remind INTEGER DEFAULT 0,
             bank_debit INTEGER DEFAULT 0,
+            print_only INTEGER DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
         )
@@ -208,6 +209,14 @@ def init_db(conn: sqlite3.Connection) -> None:
     # Add bank_debit column if it doesn't exist (for existing databases)
     try:
         conn.execute("ALTER TABLE customer_details ADD COLUMN bank_debit INTEGER DEFAULT 0")
+        conn.commit()
+    except sqlite3.OperationalError:
+        # Column already exists, that's fine
+        pass
+
+    # Add print_only column if it doesn't exist (for existing databases)
+    try:
+        conn.execute("ALTER TABLE customer_details ADD COLUMN print_only INTEGER DEFAULT 0")
         conn.commit()
     except sqlite3.OperationalError:
         # Column already exists, that's fine
