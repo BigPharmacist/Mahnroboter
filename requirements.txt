@@ -3,8 +3,9 @@ Flask>=3.0.0,<4
 
 # PDF handling
 pypdf>=6.2.0,<7
+pdfplumber>=0.11.0,<1
 reportlab>=4.0.0,<5
-Pillow>=12.0.0,<13
+Pillow>=10.0.0,<12.0.0
 
 # File monitoring
 watchdog>=6.0.0,<7
@@ -14,3 +15,7 @@ requests>=2.32.0,<3
 
 # Environment variables
 python-dotenv>=1.0.0,<2
+
+# Fuzzy string matching for customer similarity detection
+thefuzz>=0.22.0,<1
+python-Levenshtein>=0.25.0,<1  # Optional but speeds up thefuzz

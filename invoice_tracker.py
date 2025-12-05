@@ -25,6 +25,8 @@ from pypdf import PdfReader
 import pdfplumber
 from dotenv import load_dotenv
 import requests
+from thefuzz import fuzz
+import json
 
 # Load environment variables
 load_dotenv()
@@ -53,8 +55,10 @@ class InvoiceRecord:
     invoice_number: Optional[str]
     invoice_date: str  # ISO 8601 (YYYY-MM-DD)
     customer_name: str
-    customer_address: str
+    customer_address: str  # Deprecated: use customer_street and customer_city
     amount_cents: int
+    customer_street: Optional[str] = None
+    customer_city: Optional[str] = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -133,6 +137,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             invoice_number TEXT,
             customer_name TEXT NOT NULL,
             customer_address TEXT NOT NULL,
+            customer_street TEXT,
+            customer_city TEXT,
             invoice_date TEXT NOT NULL,
             amount_cents INTEGER NOT NULL,
             currency TEXT NOT NULL DEFAULT 'EUR',
@@ -222,6 +228,30 @@ def init_db(conn: sqlite3.Connection) -> None:
         # Column already exists, that's fine
         pass
 
+    # Add custom_name column if it doesn't exist (for overriding customer name)
+    try:
+        conn.execute("ALTER TABLE customer_details ADD COLUMN custom_name TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        # Column already exists, that's fine
+        pass
+
+    # Add custom_street column if it doesn't exist (for overriding customer street)
+    try:
+        conn.execute("ALTER TABLE customer_details ADD COLUMN custom_street TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        # Column already exists, that's fine
+        pass
+
+    # Add custom_city column if it doesn't exist (for overriding customer city)
+    try:
+        conn.execute("ALTER TABLE customer_details ADD COLUMN custom_city TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        # Column already exists, that's fine
+        pass
+
     # Add uncollectible column to invoices if it doesn't exist (for existing databases)
     try:
         conn.execute("ALTER TABLE invoices ADD COLUMN uncollectible INTEGER DEFAULT 0")
@@ -229,6 +259,37 @@ def init_db(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         # Column already exists, that's fine
         pass
+
+    # Add customer_street and customer_city columns to invoices if they don't exist
+    try:
+        conn.execute("ALTER TABLE invoices ADD COLUMN customer_street TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
+    try:
+        conn.execute("ALTER TABLE invoices ADD COLUMN customer_city TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
+    # Migrate existing customer_address data to customer_street and customer_city
+    # Only migrate rows where customer_street is NULL (not yet migrated)
+    conn.execute("""
+        UPDATE invoices
+        SET
+            customer_street = CASE
+                WHEN customer_address LIKE '%,%'
+                THEN TRIM(SUBSTR(customer_address, 1, INSTR(customer_address, ',') - 1))
+                ELSE customer_address
+            END,
+            customer_city = CASE
+                WHEN customer_address LIKE '%,%'
+                THEN TRIM(SUBSTR(customer_address, INSTR(customer_address, ',') + 1))
+                ELSE ''
+            END
+        WHERE customer_street IS NULL
+    """)
 
     # Create sammelrechnungen_letterxpress table for tracking Letterxpress submissions
     conn.execute(
@@ -289,6 +350,29 @@ def init_db(conn: sqlite3.Connection) -> None:
             event_timestamp TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
             metadata TEXT,
             FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    # Create pending_imports table for imports that need user review due to similar customers
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pending_imports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_path TEXT NOT NULL UNIQUE,
+            invoice_number TEXT,
+            invoice_date TEXT NOT NULL,
+            customer_name TEXT NOT NULL,
+            customer_street TEXT,
+            customer_city TEXT,
+            amount_cents INTEGER NOT NULL,
+            snapshot_date TEXT,
+            snapshot_id INTEGER,
+            similar_customers TEXT,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'resolved', 'rejected')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+            resolved_at TEXT,
+            FOREIGN KEY (snapshot_id) REFERENCES snapshots(id) ON DELETE CASCADE
         )
         """
     )
@@ -357,7 +441,12 @@ def is_storno_document(text: str) -> bool:
     return False
 
 
-def extract_customer(lines: list[str]) -> tuple[str, str]:
+def extract_customer(lines: list[str]) -> tuple[str, str, str]:
+    """Extract customer name, street, and city separately from invoice lines.
+
+    Returns:
+        tuple[str, str, str]: (customer_name, customer_street, customer_city)
+    """
     # Try to find customer info by looking for address pattern with name followed by street and city
     # Format: Name, Street + Number, PLZ + City
     for idx in range(len(lines) - 2):
@@ -372,8 +461,9 @@ def extract_customer(lines: list[str]) -> tuple[str, str]:
         if (addr_line2 and len(addr_line2) >= 5 and addr_line2[:5].isdigit()
             and name and "Apotheke" not in name and "Datum:" not in name
             and "DECKBLATT" not in name and "Tel" not in name and "Fax" not in name):
-            address = f"{addr_line1}, {addr_line2}"
-            return name, address
+            street = addr_line1
+            city = addr_line2
+            return name, street, city
 
     # Fallback: try old method with markers
     for idx, raw in enumerate(lines):
@@ -390,8 +480,9 @@ def extract_customer(lines: list[str]) -> tuple[str, str]:
                 raise ValueError("Unvollständige Adresse im PDF") from exc
             if not name or not addr_line1 or not addr_line2:
                 raise ValueError("Adresse enthält leere Zeilen")
-            address = f"{addr_line1}, {addr_line2}"
-            return name, address
+            street = addr_line1
+            city = addr_line2
+            return name, street, city
     raise ValueError("Keine Empfängeradresse gefunden")
 
 
@@ -458,7 +549,10 @@ def parse_invoice(pdf_path: Path, storage_path: str) -> InvoiceRecord:
     # Use robust extraction method
     amount_cents = extract_total_amount_robust(text)
 
-    customer_name, customer_address = extract_customer(lines)
+    customer_name, customer_street, customer_city = extract_customer(lines)
+
+    # For backward compatibility, also set customer_address
+    customer_address = f"{customer_street}, {customer_city}"
 
     return InvoiceRecord(
         file_path=storage_path,
@@ -467,6 +561,8 @@ def parse_invoice(pdf_path: Path, storage_path: str) -> InvoiceRecord:
         customer_name=customer_name,
         customer_address=customer_address,
         amount_cents=amount_cents,
+        customer_street=customer_street,
+        customer_city=customer_city,
     )
 
 
@@ -507,9 +603,11 @@ def get_or_create_invoice(conn: sqlite3.Connection, record: InvoiceRecord) -> in
             customer_name,
             customer_address,
             invoice_date,
-            amount_cents
+            amount_cents,
+            customer_street,
+            customer_city
         )
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record.invoice_number,
@@ -517,6 +615,8 @@ def get_or_create_invoice(conn: sqlite3.Connection, record: InvoiceRecord) -> in
             record.customer_address,
             record.invoice_date,
             record.amount_cents,
+            record.customer_street,
+            record.customer_city,
         )
     )
     return cursor.lastrowid
@@ -624,6 +724,496 @@ def determine_salutation_for_customer(customer_name: str) -> Optional[str]:
     if not first_name:
         return None
     return determine_gender_via_ai(first_name)
+
+
+def normalize_string(text: str) -> str:
+    """
+    Normalize a string for comparison by removing common variations.
+    """
+    if not text:
+        return ""
+
+    # Convert to lowercase
+    normalized = text.lower().strip()
+
+    # Remove common punctuation
+    normalized = normalized.replace(".", "").replace(",", "").replace("-", " ")
+
+    # Replace common abbreviations
+    replacements = {
+        "str": "strasse",
+        "straße": "strasse",
+        "strasse": "strasse",
+        "str.": "strasse",
+    }
+
+    for old, new in replacements.items():
+        normalized = normalized.replace(old, new)
+
+    # Remove extra whitespace
+    normalized = " ".join(normalized.split())
+
+    return normalized
+
+
+def highlight_diff(text1: str, text2: str) -> tuple[str, str]:
+    """
+    Compare two strings and return HTML with highlighted differences.
+
+    Returns:
+        Tuple of (text1_highlighted, text2_highlighted)
+    """
+    import difflib
+    import html
+
+    if not text1 or not text2:
+        return (html.escape(text1 or ""), html.escape(text2 or ""))
+
+    # Use SequenceMatcher to find differences
+    matcher = difflib.SequenceMatcher(None, text1, text2)
+
+    result1 = []
+    result2 = []
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        text1_part = html.escape(text1[i1:i2])
+        text2_part = html.escape(text2[j1:j2])
+
+        if tag == 'equal':
+            result1.append(text1_part)
+            result2.append(text2_part)
+        elif tag == 'replace':
+            result1.append(f'<mark class="diff-change">{text1_part}</mark>')
+            result2.append(f'<mark class="diff-change">{text2_part}</mark>')
+        elif tag == 'delete':
+            result1.append(f'<mark class="diff-delete">{text1_part}</mark>')
+        elif tag == 'insert':
+            result2.append(f'<mark class="diff-insert">{text2_part}</mark>')
+
+    return (''.join(result1), ''.join(result2))
+
+
+def find_similar_customers(
+    conn: sqlite3.Connection,
+    customer_name: str,
+    customer_street: str,
+    customer_city: str,
+    similarity_threshold: int = 80
+) -> list[dict]:
+    """
+    Find similar customers in the database using fuzzy string matching.
+
+    Args:
+        conn: Database connection
+        customer_name: Name to search for
+        customer_street: Street to search for
+        customer_city: City to search for
+        similarity_threshold: Minimum similarity score (0-100) to consider a match
+
+    Returns:
+        List of dictionaries with similar customer data and similarity scores
+    """
+    # Get all existing customers from invoices
+    cursor = conn.execute("""
+        SELECT DISTINCT customer_name, customer_street, customer_city
+        FROM invoices
+        WHERE customer_name IS NOT NULL
+    """)
+
+    existing_customers = cursor.fetchall()
+    similar_customers = []
+
+    # Normalize input
+    norm_name = normalize_string(customer_name)
+    norm_street = normalize_string(customer_street or "")
+    norm_city = normalize_string(customer_city or "")
+
+    for existing_name, existing_street, existing_city in existing_customers:
+        # Normalize existing data
+        norm_existing_name = normalize_string(existing_name)
+        norm_existing_street = normalize_string(existing_street or "")
+        norm_existing_city = normalize_string(existing_city or "")
+
+        # Calculate similarity scores for each field
+        name_score = fuzz.ratio(norm_name, norm_existing_name)
+        street_score = fuzz.ratio(norm_street, norm_existing_street) if norm_street and norm_existing_street else 0
+        city_score = fuzz.ratio(norm_city, norm_existing_city) if norm_city and norm_existing_city else 0
+
+        # Calculate weighted average (name is most important)
+        # Name: 50%, Street: 30%, City: 20%
+        if norm_street and norm_city:
+            overall_score = (name_score * 0.5) + (street_score * 0.3) + (city_score * 0.2)
+        elif norm_street:
+            overall_score = (name_score * 0.7) + (street_score * 0.3)
+        else:
+            overall_score = name_score
+
+        # If overall similarity is above threshold, add to results
+        if overall_score >= similarity_threshold:
+            # Count how many invoices this customer has
+            invoice_count = conn.execute(
+                "SELECT COUNT(*) FROM invoices WHERE customer_name = ?",
+                (existing_name,)
+            ).fetchone()[0]
+
+            # Calculate diff highlights for name, street, and city
+            name_new_hl, name_old_hl = highlight_diff(customer_name, existing_name)
+            street_new_hl, street_old_hl = highlight_diff(customer_street or "", existing_street or "")
+            city_new_hl, city_old_hl = highlight_diff(customer_city or "", existing_city or "")
+
+            similar_customers.append({
+                "customer_name": existing_name,
+                "customer_street": existing_street,
+                "customer_city": existing_city,
+                "customer_name_highlighted": name_old_hl,
+                "customer_street_highlighted": street_old_hl,
+                "customer_city_highlighted": city_old_hl,
+                "new_name_highlighted": name_new_hl,
+                "new_street_highlighted": street_new_hl,
+                "new_city_highlighted": city_new_hl,
+                "similarity_score": round(overall_score, 1),
+                "name_score": round(name_score, 1),
+                "street_score": round(street_score, 1),
+                "city_score": round(city_score, 1),
+                "invoice_count": invoice_count
+            })
+
+    # Sort by similarity score (highest first)
+    similar_customers.sort(key=lambda x: x["similarity_score"], reverse=True)
+
+    return similar_customers
+
+
+def merge_customers(
+    conn: sqlite3.Connection,
+    old_customer_name: str,
+    old_customer_street: str,
+    old_customer_city: str,
+    new_customer_name: str,
+    new_customer_street: str,
+    new_customer_city: str
+) -> int:
+    """
+    Merge customer data by updating all invoices from old customer to new customer.
+
+    Args:
+        conn: Database connection
+        old_customer_name: Name of the customer to be replaced
+        old_customer_street: Street of the customer to be replaced
+        old_customer_city: City of the customer to be replaced
+        new_customer_name: Name to use for all invoices
+        new_customer_street: Street to use for all invoices
+        new_customer_city: City to use for all invoices
+
+    Returns:
+        Number of invoices updated
+    """
+    # Count invoices to be updated
+    count = conn.execute(
+        "SELECT COUNT(*) FROM invoices WHERE customer_name = ?",
+        (old_customer_name,)
+    ).fetchone()[0]
+
+    if count == 0:
+        return 0
+
+    # Update all invoices with the old customer name to use the new customer data
+    conn.execute(
+        """
+        UPDATE invoices
+        SET customer_name = ?,
+            customer_street = ?,
+            customer_city = ?,
+            customer_address = ?
+        WHERE customer_name = ?
+        """,
+        (
+            new_customer_name,
+            new_customer_street,
+            new_customer_city,
+            f"{new_customer_street}, {new_customer_city}",
+            old_customer_name,
+        )
+    )
+
+    # Check if customer_details exists for old customer
+    old_details = conn.execute(
+        "SELECT * FROM customer_details WHERE customer_name = ?",
+        (old_customer_name,)
+    ).fetchone()
+
+    # Check if customer_details exists for new customer
+    new_details = conn.execute(
+        "SELECT * FROM customer_details WHERE customer_name = ?",
+        (new_customer_name,)
+    ).fetchone()
+
+    # Merge customer_details
+    if old_details and not new_details:
+        # If only old customer has details, rename them to new customer
+        conn.execute(
+            """
+            UPDATE customer_details
+            SET customer_name = ?,
+                updated_at = datetime('now', 'localtime')
+            WHERE customer_name = ?
+            """,
+            (new_customer_name, old_customer_name)
+        )
+    elif old_details and new_details:
+        # Both have details - keep new customer's details, delete old
+        conn.execute(
+            "DELETE FROM customer_details WHERE customer_name = ?",
+            (old_customer_name,)
+        )
+
+    # Log the merge operation for all affected invoices
+    invoice_ids = conn.execute(
+        "SELECT id FROM invoices WHERE customer_name = ?",
+        (new_customer_name,)
+    ).fetchall()
+
+    for (invoice_id,) in invoice_ids:
+        log_invoice_event(
+            conn,
+            invoice_id,
+            "CUSTOMER_MERGED",
+            {
+                "old_customer_name": old_customer_name,
+                "old_customer_street": old_customer_street,
+                "old_customer_city": old_customer_city,
+                "new_customer_name": new_customer_name,
+                "new_customer_street": new_customer_street,
+                "new_customer_city": new_customer_city,
+            }
+        )
+
+    conn.commit()
+    logging.info(
+        "Kunden zusammengeführt: '%s' -> '%s' (%d Rechnungen aktualisiert)",
+        old_customer_name,
+        new_customer_name,
+        count
+    )
+
+    return count
+
+
+def update_customer_data_for_all_invoices(
+    conn: sqlite3.Connection,
+    old_name: str,
+    old_street: str,
+    old_city: str,
+    new_name: str,
+    new_street: str,
+    new_city: str
+) -> int:
+    """
+    Update customer data for all invoices matching the old data.
+
+    Args:
+        conn: Database connection
+        old_name: Old customer name
+        old_street: Old customer street
+        old_city: Old customer city
+        new_name: New customer name
+        new_street: New customer street
+        new_city: New customer city
+
+    Returns:
+        Number of invoices updated
+    """
+    new_address = f"{new_street}, {new_city}"
+
+    cursor = conn.execute(
+        """
+        UPDATE invoices
+        SET customer_name = ?,
+            customer_street = ?,
+            customer_city = ?,
+            customer_address = ?
+        WHERE customer_name = ?
+          AND customer_street = ?
+          AND customer_city = ?
+        """,
+        (new_name, new_street, new_city, new_address,
+         old_name, old_street, old_city)
+    )
+
+    updated_count = cursor.rowcount
+    conn.commit()
+
+    logging.info(
+        "Kundendaten aktualisiert: '%s' -> '%s' (%d Rechnungen)",
+        old_name, new_name, updated_count
+    )
+
+    return updated_count
+
+
+def resolve_pending_import(
+    conn: sqlite3.Connection,
+    pending_import_id: int,
+    action: str,
+    selected_customer: Optional[dict] = None,
+    use_new_data: bool = False
+) -> bool:
+    """
+    Resolve a pending import by either creating a new customer or merging with existing.
+
+    Args:
+        conn: Database connection
+        pending_import_id: ID of the pending import to resolve
+        action: Either 'create_new' or 'merge_with_existing'
+        selected_customer: If action is 'merge_with_existing', the customer to merge with
+        use_new_data: If True and action is 'merge_with_existing', update all existing
+                     invoices with the new customer data from pending import
+
+    Returns:
+        True if resolved successfully, False otherwise
+    """
+    # Get pending import data
+    pending = conn.execute(
+        """
+        SELECT file_path, invoice_number, invoice_date, customer_name,
+               customer_street, customer_city, amount_cents, snapshot_date, snapshot_id
+        FROM pending_imports
+        WHERE id = ? AND status = 'pending'
+        """,
+        (pending_import_id,)
+    ).fetchone()
+
+    if not pending:
+        logging.error("Pending import %d nicht gefunden oder bereits resolved", pending_import_id)
+        return False
+
+    (file_path, invoice_number, invoice_date, customer_name, customer_street,
+     customer_city, amount_cents, snapshot_date, snapshot_id) = pending
+
+    if action == 'create_new':
+        # Create new invoice with the data from pending import
+        customer_address = f"{customer_street}, {customer_city}"
+        record = InvoiceRecord(
+            file_path=file_path,
+            invoice_number=invoice_number,
+            invoice_date=invoice_date,
+            customer_name=customer_name,
+            customer_address=customer_address,
+            amount_cents=amount_cents,
+            customer_street=customer_street,
+            customer_city=customer_city
+        )
+
+        invoice_id = get_or_create_invoice(conn, record)
+        link_invoice_to_snapshot(conn, invoice_id, snapshot_id, file_path)
+
+        # Log import event
+        log_invoice_event(
+            conn,
+            invoice_id,
+            "IMPORT",
+            {
+                "snapshot_date": snapshot_date,
+                "file_path": file_path,
+                "amount": amount_cents / 100,
+                "resolved_from_pending": True
+            }
+        )
+
+        logging.info(
+            "Pending import resolved - Neuer Kunde erstellt: %s",
+            customer_name
+        )
+
+    elif action == 'merge_with_existing':
+        if not selected_customer:
+            logging.error("Kein Kunde für Merge ausgewählt")
+            return False
+
+        # Determine which customer data to use
+        if use_new_data:
+            # Use new data from pending import and update all existing invoices
+            final_name = customer_name
+            final_street = customer_street
+            final_city = customer_city
+
+            # Get old customer data
+            old_name = selected_customer.get('customer_name')
+            old_street = selected_customer.get('customer_street')
+            old_city = selected_customer.get('customer_city')
+
+            # Update all existing invoices with new data
+            updated_count = update_customer_data_for_all_invoices(
+                conn,
+                old_name, old_street, old_city,
+                final_name, final_street, final_city
+            )
+
+            logging.info(
+                "Kundendaten-Version NEU verwendet: %d Rechnungen aktualisiert",
+                updated_count
+            )
+        else:
+            # Use existing customer's data
+            final_name = selected_customer.get('customer_name')
+            final_street = selected_customer.get('customer_street')
+            final_city = selected_customer.get('customer_city')
+
+        customer_address = f"{final_street}, {final_city}"
+        record = InvoiceRecord(
+            file_path=file_path,
+            invoice_number=invoice_number,
+            invoice_date=invoice_date,
+            customer_name=final_name,
+            customer_address=customer_address,
+            amount_cents=amount_cents,
+            customer_street=final_street,
+            customer_city=final_city
+        )
+
+        invoice_id = get_or_create_invoice(conn, record)
+        link_invoice_to_snapshot(conn, invoice_id, snapshot_id, file_path)
+
+        # Log import event with merge info
+        log_invoice_event(
+            conn,
+            invoice_id,
+            "IMPORT",
+            {
+                "snapshot_date": snapshot_date,
+                "file_path": file_path,
+                "amount": amount_cents / 100,
+                "resolved_from_pending": True,
+                "merged_with_existing": final_name,
+                "original_name": customer_name,
+                "used_new_data": use_new_data
+            }
+        )
+
+        logging.info(
+            "Pending import resolved - Zusammengeführt: '%s' -> '%s' (Neue Daten: %s)",
+            customer_name,
+            final_name,
+            "Ja" if use_new_data else "Nein"
+        )
+
+    else:
+        logging.error("Unbekannte Aktion: %s", action)
+        return False
+
+    # Mark pending import as resolved
+    conn.execute(
+        """
+        UPDATE pending_imports
+        SET status = 'resolved',
+            resolved_at = datetime('now', 'localtime')
+        WHERE id = ?
+        """,
+        (pending_import_id,)
+    )
+
+    conn.commit()
+    return True
 
 
 def log_invoice_event(
@@ -763,6 +1353,9 @@ def process_pdf_file(conn: sqlite3.Connection, pdf_path: Path, root: Path) -> bo
     """
     Process a PDF file and add it to the database with snapshot tracking.
     Returns True if a new invoice-snapshot link was created.
+
+    If similar customers are found, the import is saved to pending_imports
+    for user review and False is returned.
     """
     # Extract snapshot info from path
     snapshot_info = extract_snapshot_from_path(pdf_path, root)
@@ -775,12 +1368,89 @@ def process_pdf_file(conn: sqlite3.Connection, pdf_path: Path, root: Path) -> bo
     # Get storage key for file path
     key = storage_key(pdf_path, root)
 
+    # Check if this file is already in pending_imports
+    existing_pending = conn.execute(
+        "SELECT id FROM pending_imports WHERE file_path = ?",
+        (key,)
+    ).fetchone()
+
+    if existing_pending:
+        logging.debug("PDF bereits in pending_imports: %s", pdf_path)
+        return False
+
     # Parse invoice data
     record = parse_invoice(pdf_path, key)
 
     # Get or create snapshot
     snapshot_id = get_or_create_snapshot(conn, snapshot_date, folder_name)
 
+    # First, check if customer already exists EXACTLY (fast DB query)
+    exact_match = conn.execute(
+        """
+        SELECT COUNT(*) FROM invoices
+        WHERE customer_name = ? AND customer_street = ? AND customer_city = ?
+        """,
+        (record.customer_name, record.customer_street, record.customer_city)
+    ).fetchone()[0]
+
+    # Only do expensive fuzzy matching if no exact match exists
+    similar_customers = []
+    if exact_match == 0:
+        # Check for similar customers BEFORE creating invoice
+        similar_customers = find_similar_customers(
+            conn,
+            record.customer_name,
+            record.customer_street,
+            record.customer_city,
+            similarity_threshold=80
+        )
+
+    # If similar customers found, save to pending_imports for user review
+    if similar_customers:
+        try:
+            conn.execute(
+                """
+                INSERT INTO pending_imports (
+                    file_path,
+                    invoice_number,
+                    invoice_date,
+                    customer_name,
+                    customer_street,
+                    customer_city,
+                    amount_cents,
+                    snapshot_date,
+                    snapshot_id,
+                    similar_customers,
+                    status
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                """,
+                (
+                    key,
+                    record.invoice_number,
+                    record.invoice_date,
+                    record.customer_name,
+                    record.customer_street,
+                    record.customer_city,
+                    record.amount_cents,
+                    snapshot_date,
+                    snapshot_id,
+                    json.dumps(similar_customers),
+                )
+            )
+            conn.commit()
+            logging.info(
+                "Ähnlicher Kunde gefunden für '%s' - Import wartet auf Review (Score: %.1f%%)",
+                record.customer_name,
+                similar_customers[0]["similarity_score"]
+            )
+            return False
+        except sqlite3.IntegrityError:
+            # File already in pending_imports
+            logging.debug("PDF bereits in pending_imports: %s", pdf_path)
+            return False
+
+    # No similar customers found - proceed with normal import
     # Get or create invoice
     invoice_id = get_or_create_invoice(conn, record)
 

@@ -11,6 +11,9 @@
 
   <div class="scan-controls">
     <button id="scan-button" class="scan-button">&#x1F50D; Neu Importieren</button>
+    <button id="pending-imports-button" class="scan-button" style="background-color: #ff6b35; margin-left: 0.5rem; display: none;">
+      ⚠️ Pending Imports <span id="pending-imports-badge" class="filter-badge"></span>
+    </button>
     <form method="get" class="search-form" style="display: inline-flex; align-items: center; gap: 0.5rem; margin-left: 1rem;">
       <label for="q">Suche</label>
       <input type="text" id="q" name="q" value="{{ query }}" placeholder="Name, Rechnungsnummer oder Adresse">
@@ -867,10 +870,31 @@
           summaryDiv.innerHTML = summaryHTML;
           closeBtn.disabled = false;
 
-          // Reload page after 2 seconds if new invoices were imported
-          if (data.success > 0) {
-            setTimeout(() => window.location.reload(), 2000);
-          }
+          // Check for pending imports after scan completes
+          eventSource.close();
+          fetch('/api/pending-imports')
+            .then(response => response.json())
+            .then(pendingData => {
+              if (pendingData.success && pendingData.count > 0) {
+                // Close scan modal and show pending imports modal
+                modal.style.display = 'none';
+                setTimeout(() => {
+                  if (window.showPendingImportsModal) {
+                    window.showPendingImportsModal();
+                  }
+                }, 300);
+              } else if (data.success > 0 || data.skipped > 0) {
+                // Reload page after 2 seconds if invoices were imported/skipped
+                setTimeout(() => window.location.reload(), 2000);
+              }
+            })
+            .catch(error => {
+              console.error('Error checking pending imports:', error);
+              // Fallback: just reload if new invoices
+              if (data.success > 0) {
+                setTimeout(() => window.location.reload(), 2000);
+              }
+            });
         }
       };
 
@@ -885,9 +909,27 @@
       closeBtn.onclick = function() {
         eventSource.close();
         modal.style.display = 'none';
-        if (successCount > 0) {
-          window.location.reload();
-        }
+
+        // Check for pending imports when closing manually
+        fetch('/api/pending-imports')
+          .then(response => response.json())
+          .then(pendingData => {
+            if (pendingData.success && pendingData.count > 0) {
+              setTimeout(() => {
+                if (window.showPendingImportsModal) {
+                  window.showPendingImportsModal();
+                }
+              }, 300);
+            } else if (successCount > 0) {
+              window.location.reload();
+            }
+          })
+          .catch(error => {
+            console.error('Error checking pending imports:', error);
+            if (successCount > 0) {
+              window.location.reload();
+            }
+          });
       };
     });
   </script>
@@ -1184,6 +1226,639 @@
       }
     });
   })();
+
+  // Pending Imports Modal
+  (function() {
+    let currentImports = [];
+    let currentIndex = 0;
+
+    function showPendingImportsModal() {
+      // Get elements when function is called (modal HTML should be loaded by now)
+      const modal = document.getElementById('pending-imports-modal');
+      const importsList = document.getElementById('pending-imports-list');
+      const pendingCount = document.getElementById('pending-imports-count');
+
+      if (!modal || !importsList || !pendingCount) {
+        console.error('Pending imports modal elements not found');
+        return;
+      }
+
+      // Fetch pending imports
+      fetch('/api/pending-imports')
+        .then(response => response.json())
+        .then(data => {
+          if (data.success && data.count > 0) {
+            currentImports = data.pending_imports;
+            currentIndex = 0;
+            pendingCount.textContent = data.count;
+            renderCurrentImport();
+            updateNavigationButtons();
+            modal.classList.add('show');
+          }
+        })
+        .catch(error => {
+          console.error('Error fetching pending imports:', error);
+        });
+    }
+
+    function renderCurrentImport() {
+      const importsList = document.getElementById('pending-imports-list');
+      const currentIndexEl = document.getElementById('pending-current-index');
+
+      if (!currentImports || currentImports.length === 0) return;
+
+      const imp = currentImports[currentIndex];
+      currentIndexEl.textContent = currentIndex + 1;
+
+      importsList.innerHTML = '';
+      const importDiv = document.createElement('div');
+      importDiv.className = 'pending-import-item';
+      importDiv.innerHTML = `
+        <div class="pending-import-header">
+          <div>
+            <strong>Neue Rechnung:</strong> ${imp.invoice_number || 'ohne Nummer'} · ${imp.invoice_date}
+          </div>
+          <span class="pending-import-amount">${(imp.amount_euros).toFixed(2)} €</span>
+        </div>
+
+        <div class="similar-customers-section">
+          ${imp.similar_customers.map((customer, idx) => `
+            <div class="similar-customer-group">
+              <div class="comparison-header">
+                <span class="similarity-score">${customer.similarity_score}% ähnlich</span>
+                <span style="color: #666; font-size: 0.85rem;">${customer.invoice_count} Rechnung(en) vorhanden</span>
+              </div>
+
+              <div class="comparison-container">
+                <div class="comparison-column comparison-new">
+                  <div class="comparison-label">📄 Neue Rechnung</div>
+                  <div class="comparison-name">${customer.new_name_highlighted || imp.customer_name}</div>
+                  <div class="comparison-address">${customer.new_street_highlighted || imp.customer_street}</div>
+                  <div class="comparison-address">${customer.new_city_highlighted || imp.customer_city}</div>
+                </div>
+
+                <div class="comparison-divider">↔</div>
+
+                <div class="comparison-column comparison-existing">
+                  <div class="comparison-label">💾 In Datenbank</div>
+                  <div class="comparison-name">${customer.customer_name_highlighted || customer.customer_name}</div>
+                  <div class="comparison-address">${customer.customer_street_highlighted || customer.customer_street}</div>
+                  <div class="comparison-address">${customer.customer_city_highlighted || customer.customer_city}</div>
+                </div>
+              </div>
+
+              <div class="comparison-options">
+                <div class="similar-customer-option">
+                  <input type="radio"
+                         id="customer-${imp.id}-${idx}-new"
+                         name="customer-${imp.id}"
+                         value="${idx}-new"
+                         ${idx === 0 ? 'checked' : ''}>
+                  <label for="customer-${imp.id}-${idx}-new">
+                    <strong>📄 Neue Version verwenden</strong>
+                    <span style="font-size: 0.85em; color: #666; display: block; margin-top: 0.15rem;">
+                      (${customer.invoice_count} bestehende Rechnung(en) aktualisieren)
+                    </span>
+                  </label>
+                </div>
+                <div class="similar-customer-option">
+                  <input type="radio"
+                         id="customer-${imp.id}-${idx}-old"
+                         name="customer-${imp.id}"
+                         value="${idx}-old">
+                  <label for="customer-${imp.id}-${idx}-old">
+                    <strong>💾 Datenbank-Version verwenden</strong>
+                    <span style="font-size: 0.85em; color: #666; display: block; margin-top: 0.15rem;">
+                      (Bestehende Daten behalten)
+                    </span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          `).join('')}
+
+          <div class="similar-customer-option" style="margin-top: 1rem; border: 2px dashed #ddd;">
+            <input type="radio"
+                   id="customer-${imp.id}-new"
+                   name="customer-${imp.id}"
+                   value="new">
+            <label for="customer-${imp.id}-new">
+              <strong>➕ Als komplett neuen Kunden anlegen</strong>
+              <span style="font-size: 0.85em; color: #666; display: block; margin-top: 0.15rem;">
+                (Nicht zusammenführen)
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <div class="pending-import-actions">
+          <button class="btn-resolve" data-import-id="${imp.id}" data-customer-data='${JSON.stringify(imp.similar_customers)}'>
+            ✓ Auswahl bestätigen
+          </button>
+        </div>
+      `;
+      importsList.appendChild(importDiv);
+
+      // Attach resolve handler
+      const resolveBtn = importDiv.querySelector('.btn-resolve');
+      if (resolveBtn) {
+        resolveBtn.addEventListener('click', function() {
+          const importId = parseInt(this.getAttribute('data-import-id'));
+          const customersData = JSON.parse(this.getAttribute('data-customer-data'));
+          const selectedRadio = document.querySelector(`input[name="customer-${importId}"]:checked`);
+
+          if (!selectedRadio) {
+            alert('Bitte wählen Sie eine Option aus');
+            return;
+          }
+
+          const selectedValue = selectedRadio.value;
+          let action, selectedCustomer, useNewData = false;
+
+          if (selectedValue === 'new') {
+            action = 'create_new';
+            selectedCustomer = null;
+          } else if (selectedValue.endsWith('-old')) {
+            action = 'merge_with_existing';
+            const idx = parseInt(selectedValue.split('-')[0]);
+            selectedCustomer = customersData[idx];
+            useNewData = false;
+          } else if (selectedValue.endsWith('-new')) {
+            action = 'merge_with_existing';
+            const idx = parseInt(selectedValue.split('-')[0]);
+            selectedCustomer = customersData[idx];
+            useNewData = true;
+          }
+
+          resolveImport(importId, action, selectedCustomer, useNewData);
+        });
+      }
+    }
+
+    function updateNavigationButtons() {
+      const prevBtn = document.getElementById('pending-prev-btn');
+      const nextBtn = document.getElementById('pending-next-btn');
+
+      if (prevBtn) {
+        prevBtn.disabled = currentIndex === 0;
+        prevBtn.style.opacity = currentIndex === 0 ? '0.5' : '1';
+      }
+
+      if (nextBtn) {
+        nextBtn.disabled = currentIndex >= currentImports.length - 1;
+        nextBtn.style.opacity = currentIndex >= currentImports.length - 1 ? '0.5' : '1';
+      }
+    }
+
+    function navigatePrev() {
+      if (currentIndex > 0) {
+        currentIndex--;
+        renderCurrentImport();
+        updateNavigationButtons();
+      }
+    }
+
+    function navigateNext() {
+      if (currentIndex < currentImports.length - 1) {
+        currentIndex++;
+        renderCurrentImport();
+        updateNavigationButtons();
+      }
+    }
+
+    function resolveImport(importId, action, selectedCustomer, useNewData = false) {
+      const modal = document.getElementById('pending-imports-modal');
+
+      fetch('/api/resolve-import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          import_id: importId,
+          action: action,
+          selected_customer: selectedCustomer,
+          use_new_data: useNewData
+        })
+      })
+      .then(response => response.json())
+      .then(data => {
+        if (data.success) {
+          // Remove resolved import from array
+          currentImports = currentImports.filter(imp => imp.id !== importId);
+
+          if (currentImports.length > 0) {
+            // Adjust index if needed
+            if (currentIndex >= currentImports.length) {
+              currentIndex = currentImports.length - 1;
+            }
+            // Update count and render
+            document.getElementById('pending-imports-count').textContent = currentImports.length;
+            renderCurrentImport();
+            updateNavigationButtons();
+          } else {
+            // No more imports, close modal and reload
+            if (modal) modal.classList.remove('show');
+            window.location.reload();
+          }
+        } else {
+          alert('Fehler: ' + (data.error || 'Unbekannter Fehler'));
+        }
+      })
+      .catch(error => {
+        console.error('Error resolving import:', error);
+        alert('Fehler beim Auflösen des Imports');
+      });
+    }
+
+    // Make function globally accessible
+    window.showPendingImportsModal = showPendingImportsModal;
+
+    // Set up event listeners when DOM is ready
+    document.addEventListener('DOMContentLoaded', function() {
+      const modal = document.getElementById('pending-imports-modal');
+      const closeBtn = document.getElementById('close-pending-imports-modal');
+      const prevBtn = document.getElementById('pending-prev-btn');
+      const nextBtn = document.getElementById('pending-next-btn');
+
+      if (closeBtn) {
+        closeBtn.addEventListener('click', function() {
+          if (modal) modal.classList.remove('show');
+        });
+      }
+
+      if (prevBtn) {
+        prevBtn.addEventListener('click', navigatePrev);
+      }
+
+      if (nextBtn) {
+        nextBtn.addEventListener('click', navigateNext);
+      }
+
+      if (modal) {
+        modal.addEventListener('click', function(e) {
+          if (e.target === modal) {
+            modal.classList.remove('show');
+          }
+        });
+      }
+    });
+  })();
+
+  // Check for pending imports on page load
+  (function() {
+    const button = document.getElementById('pending-imports-button');
+    const badge = document.getElementById('pending-imports-badge');
+
+    function updatePendingImportsBadge() {
+      fetch('/api/pending-imports')
+        .then(response => response.json())
+        .then(data => {
+          if (data.success && data.count > 0) {
+            if (badge && button) {
+              badge.textContent = data.count;
+              button.style.display = 'inline-block';
+            }
+          } else {
+            if (button) {
+              button.style.display = 'none';
+            }
+          }
+        })
+        .catch(error => console.error('Error checking pending imports:', error));
+    }
+
+    // Set up click handler
+    if (button) {
+      button.addEventListener('click', function() {
+        if (window.showPendingImportsModal) {
+          window.showPendingImportsModal();
+        } else {
+          console.error('showPendingImportsModal function not found');
+        }
+      });
+    }
+
+    // Update badge on page load
+    updatePendingImportsBadge();
+
+    // Update badge every 30 seconds
+    setInterval(updatePendingImportsBadge, 30000);
+  })();
 </script>
+
+<!-- Pending Imports Modal -->
+<div id="pending-imports-modal" class="modal">
+  <div class="modal-content" style="max-width: 800px;">
+    <div class="modal-header">
+      <h2>Import überprüfen</h2>
+      <p style="margin: 0.5rem 0 0 0; color: #666; font-size: 0.95rem;">
+        Import <span id="pending-current-index">1</span> von <span id="pending-imports-count">0</span>
+      </p>
+    </div>
+    <div class="modal-body" style="max-height: 65vh; overflow-y: auto;">
+      <div id="pending-imports-list"></div>
+    </div>
+    <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
+      <button id="pending-prev-btn" class="modal-nav-btn">← Zurück</button>
+      <button id="close-pending-imports-modal" class="modal-close-btn">Später</button>
+      <button id="pending-next-btn" class="modal-nav-btn">Weiter →</button>
+    </div>
+  </div>
+</div>
+
+<style>
+.pending-import-item {
+  background: #fff;
+}
+
+.pending-import-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 2px solid #f0f0f0;
+}
+
+.pending-import-header h3 {
+  margin: 0;
+  color: #333;
+  font-size: 1.15rem;
+}
+
+.pending-import-amount {
+  font-size: 1.15rem;
+  font-weight: bold;
+  color: #4CAF50;
+}
+
+.pending-import-details {
+  margin-bottom: 1rem;
+}
+
+.detail-row {
+  padding: 0.35rem 0;
+  color: #555;
+  font-size: 0.9rem;
+}
+
+.similar-customers-section {
+  margin-top: 1rem;
+}
+
+.similar-customers-section h4 {
+  margin-bottom: 0.75rem;
+  color: #333;
+}
+
+.similar-customer-group {
+  margin-bottom: 1rem;
+  padding: 1rem;
+  border: 2px solid #ddd;
+  border-radius: 6px;
+  background: #fafafa;
+}
+
+.comparison-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.comparison-container {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  padding: 1rem;
+  background: white;
+  border-radius: 6px;
+  border: 1px solid #e0e0e0;
+}
+
+.comparison-column {
+  flex: 1;
+  min-width: 0;
+}
+
+.comparison-new {
+  border-right: 2px solid #e0e0e0;
+  padding-right: 1rem;
+}
+
+.comparison-existing {
+  padding-left: 1rem;
+}
+
+.comparison-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 0.5rem;
+}
+
+.comparison-name {
+  font-size: 1rem;
+  font-weight: bold;
+  color: #333;
+  margin-bottom: 0.35rem;
+}
+
+.comparison-address {
+  font-size: 0.9rem;
+  color: #555;
+  margin-bottom: 0.2rem;
+}
+
+.comparison-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  color: #999;
+  padding: 0 0.5rem;
+  min-width: 2rem;
+}
+
+.comparison-options {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.comparison-options .similar-customer-option {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.customer-group-header {
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.customer-group-header strong {
+  font-size: 1rem;
+  color: #333;
+  display: block;
+  margin-bottom: 0.15rem;
+}
+
+.customer-group-header .customer-address,
+.customer-group-header .customer-meta {
+  font-size: 0.85rem;
+  margin: 0.15rem 0;
+}
+
+.similar-customer-option {
+  display: flex;
+  align-items: flex-start;
+  margin-bottom: 0.5rem;
+  padding: 0.5rem;
+  border: 2px solid #e0e0e0;
+  border-radius: 4px;
+  background: white;
+  transition: all 0.2s;
+}
+
+.similar-customer-option:last-child {
+  margin-bottom: 0;
+}
+
+.similar-customer-option:hover {
+  background: #f9f9f9;
+  border-color: #4CAF50;
+}
+
+.similar-customer-option input[type="radio"] {
+  margin-right: 1rem;
+  margin-top: 0.25rem;
+}
+
+.similar-customer-option input[type="radio"]:checked + label {
+  color: #4CAF50;
+}
+
+.similar-customer-option label {
+  flex: 1;
+  cursor: pointer;
+}
+
+.customer-info {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.similarity-score {
+  background: #4CAF50;
+  color: white;
+  padding: 0.25rem 0.75rem;
+  border-radius: 12px;
+  font-size: 0.85rem;
+  font-weight: bold;
+}
+
+.customer-address {
+  color: #666;
+  font-size: 0.95rem;
+  margin-bottom: 0.25rem;
+}
+
+.customer-meta {
+  color: #999;
+  font-size: 0.85rem;
+}
+
+.pending-import-actions {
+  margin-top: 1rem;
+  text-align: center;
+}
+
+.btn-resolve {
+  background: #4CAF50;
+  color: white;
+  border: none;
+  padding: 0.65rem 1.75rem;
+  border-radius: 6px;
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: background 0.2s;
+  font-weight: 500;
+}
+
+.btn-resolve:hover {
+  background: #45a049;
+}
+
+.btn-resolve:active {
+  background: #3d8b40;
+}
+
+/* Diff highlighting */
+mark.diff-change {
+  background-color: #fff3cd;
+  color: #856404;
+  padding: 0.1rem 0.2rem;
+  border-radius: 2px;
+  font-weight: 600;
+}
+
+mark.diff-insert {
+  background-color: #d4edda;
+  color: #155724;
+  padding: 0.1rem 0.2rem;
+  border-radius: 2px;
+  font-weight: 600;
+}
+
+mark.diff-delete {
+  background-color: #f8d7da;
+  color: #721c24;
+  padding: 0.1rem 0.2rem;
+  border-radius: 2px;
+  font-weight: 600;
+  text-decoration: line-through;
+}
+
+.modal-nav-btn {
+  background: #f0f0f0;
+  color: #333;
+  border: 2px solid #ddd;
+  padding: 0.5rem 1.25rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-weight: 500;
+}
+
+.modal-nav-btn:hover:not(:disabled) {
+  background: #e0e0e0;
+  border-color: #4CAF50;
+}
+
+.modal-nav-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.modal-close-btn {
+  background: transparent;
+  color: #666;
+  border: none;
+  padding: 0.5rem 1rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+.modal-close-btn:hover {
+  color: #333;
+  text-decoration: underline;
+}
+</style>
 
 {% endblock %}

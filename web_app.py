@@ -60,6 +60,7 @@ from invoice_tracker import (
     init_db,
     process_pdf_file,
     log_invoice_event,
+    resolve_pending_import,
 )
 from letterxpress_client import LetterXpressClient
 
@@ -83,12 +84,12 @@ ASCII_FALLBACK_MAP = str.maketrans({
 
 SORT_COLUMN_MAP = {
     "date": "ist.invoice_date",
-    # Sort by last name (last word of customer_name)
+    # Sort by last name (last word of customer_name, using custom_name if available)
     "name": """LOWER(
         CASE
-            WHEN INSTR(ist.customer_name, ' ') > 0
-            THEN TRIM(SUBSTR(ist.customer_name, INSTR(ist.customer_name, ' ') + 1))
-            ELSE ist.customer_name
+            WHEN INSTR(COALESCE(cd.custom_name, ist.customer_name), ' ') > 0
+            THEN TRIM(SUBSTR(COALESCE(cd.custom_name, ist.customer_name), INSTR(COALESCE(cd.custom_name, ist.customer_name), ' ') + 1))
+            ELSE COALESCE(cd.custom_name, ist.customer_name)
         END
     )""",
     "address": "LOWER(ist.customer_address)",
@@ -1451,7 +1452,7 @@ class InvoiceRow:
     invoice_number: Optional[str]
     invoice_date: str
     customer_name: str
-    customer_address: str
+    customer_address: str  # Deprecated: use customer_street and customer_city
     amount_cents: int
     status: str  # 'open' or 'paid'
     last_seen_snapshot: str  # Last snapshot where this invoice appeared
@@ -1459,6 +1460,8 @@ class InvoiceRow:
     file_path: Optional[str] = None  # Path in the latest/last snapshot
     in_collective_invoice: bool = False  # Whether this invoice is in a collective invoice
     uncollectible: int = 0  # Whether this invoice is marked as uncollectible
+    customer_street: Optional[str] = None
+    customer_city: Optional[str] = None
 
     @property
     def amount_eur(self) -> float:
@@ -1955,7 +1958,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
     @app.route("/api/customers/<path:customer_name>", methods=["PUT"])
     def update_customer(customer_name: str) -> Response:
-        """Update customer details (salutation, email, notes, never_remind, bank_debit, print_only flags)."""
+        """Update customer details (salutation, email, notes, never_remind, bank_debit, print_only flags, and custom name/address)."""
         data = request.get_json()
 
         if not data:
@@ -1967,6 +1970,9 @@ def create_app(config: Optional[dict] = None) -> Flask:
         never_remind = 1 if data.get("never_remind", False) else 0
         bank_debit = 1 if data.get("bank_debit", False) else 0
         print_only = 1 if data.get("print_only", False) else 0
+        custom_name = data.get("custom_name", "")
+        custom_street = data.get("custom_street", "")
+        custom_city = data.get("custom_city", "")
 
         try:
             with sqlite3.connect(app.config["DATABASE"]) as conn:
@@ -1974,8 +1980,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 # Insert or update customer details
                 conn.execute(
                     """
-                    INSERT INTO customer_details (customer_name, salutation, email, notes, never_remind, bank_debit, print_only, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+                    INSERT INTO customer_details (customer_name, salutation, email, notes, never_remind, bank_debit, print_only, custom_name, custom_street, custom_city, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
                     ON CONFLICT(customer_name) DO UPDATE SET
                         salutation = excluded.salutation,
                         email = excluded.email,
@@ -1983,9 +1989,12 @@ def create_app(config: Optional[dict] = None) -> Flask:
                         never_remind = excluded.never_remind,
                         bank_debit = excluded.bank_debit,
                         print_only = excluded.print_only,
+                        custom_name = excluded.custom_name,
+                        custom_street = excluded.custom_street,
+                        custom_city = excluded.custom_city,
                         updated_at = datetime('now', 'localtime')
                     """,
-                    (customer_name, salutation, email, notes, never_remind, bank_debit, print_only)
+                    (customer_name, salutation, email, notes, never_remind, bank_debit, print_only, custom_name, custom_street, custom_city)
                 )
                 conn.commit()
 
@@ -2436,6 +2445,97 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
         return Response(stream_with_context(generate()), mimetype="text/event-stream")
 
+    @app.route("/api/pending-imports", methods=["GET"])
+    def get_pending_imports() -> Response:
+        """Get all pending imports that need user review."""
+        db_path = Path(app.config["DATABASE"])
+
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.execute(
+                """
+                SELECT id, file_path, invoice_number, invoice_date,
+                       customer_name, customer_street, customer_city,
+                       amount_cents, snapshot_date, similar_customers,
+                       created_at
+                FROM pending_imports
+                WHERE status = 'pending'
+                ORDER BY created_at DESC
+                """
+            )
+
+            pending_imports = []
+            for row in cursor.fetchall():
+                (import_id, file_path, invoice_number, invoice_date,
+                 customer_name, customer_street, customer_city,
+                 amount_cents, snapshot_date, similar_customers_json,
+                 created_at) = row
+
+                similar_customers = json.loads(similar_customers_json) if similar_customers_json else []
+
+                pending_imports.append({
+                    "id": import_id,
+                    "file_path": file_path,
+                    "invoice_number": invoice_number,
+                    "invoice_date": invoice_date,
+                    "customer_name": customer_name,
+                    "customer_street": customer_street,
+                    "customer_city": customer_city,
+                    "amount_cents": amount_cents,
+                    "amount_euros": amount_cents / 100,
+                    "snapshot_date": snapshot_date,
+                    "similar_customers": similar_customers,
+                    "created_at": created_at
+                })
+
+        return jsonify({
+            "success": True,
+            "pending_imports": pending_imports,
+            "count": len(pending_imports)
+        })
+
+    @app.route("/api/resolve-import", methods=["POST"])
+    def resolve_import() -> Response:
+        """Resolve a pending import by creating new customer or merging with existing."""
+        data = request.get_json()
+        import_id = data.get("import_id")
+        action = data.get("action")  # 'create_new' or 'merge_with_existing'
+        selected_customer = data.get("selected_customer")  # Only for merge action
+        use_new_data = data.get("use_new_data", False)  # Whether to use new data from import
+
+        if not import_id or not action:
+            return jsonify({"error": "import_id and action sind erforderlich"}), 400
+
+        if action not in ['create_new', 'merge_with_existing']:
+            return jsonify({"error": "action muss 'create_new' oder 'merge_with_existing' sein"}), 400
+
+        if action == 'merge_with_existing' and not selected_customer:
+            return jsonify({"error": "selected_customer ist erforderlich für merge_with_existing"}), 400
+
+        db_path = Path(app.config["DATABASE"])
+
+        try:
+            with sqlite3.connect(db_path) as conn:
+                init_db(conn)
+                success = resolve_pending_import(conn, import_id, action, selected_customer, use_new_data)
+
+                if success:
+                    # Get count of remaining pending imports
+                    remaining_count = conn.execute(
+                        "SELECT COUNT(*) FROM pending_imports WHERE status = 'pending'"
+                    ).fetchone()[0]
+
+                    return jsonify({
+                        "success": True,
+                        "message": "Import erfolgreich aufgelöst",
+                        "remaining_pending": remaining_count
+                    })
+                else:
+                    return jsonify({"error": "Import konnte nicht aufgelöst werden"}), 500
+
+        except Exception as e:
+            logging.error(f"Fehler beim Auflösen des Imports: {e}")
+            return jsonify({"error": str(e)}), 500
+
     @app.route("/api/print-invoices")
     def print_invoices() -> Response:
         """Combine all filtered invoice PDFs into a single PDF for printing."""
@@ -2852,6 +2952,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
                             i.invoice_date,
                             i.customer_name,
                             i.customer_address,
+                            i.customer_street,
+                            i.customer_city,
                             i.amount_cents,
                             isnap.file_path
                         FROM invoices i
@@ -2867,10 +2969,16 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     if not row:
                         continue
 
-                    inv_id, inv_number, inv_date, cust_name, cust_address, amount_cents, file_path = row
+                    inv_id, inv_number, inv_date, cust_name, cust_address, cust_street, cust_city, amount_cents, file_path = row
+
+                    # Construct full address from street and city (fallback to old address field if needed)
+                    if cust_street and cust_city:
+                        full_address = f"{cust_street}, {cust_city}"
+                    else:
+                        full_address = cust_address or ""
 
                     # Group by customer name and reminder level
-                    key = (cust_name, cust_address, reminder_level)
+                    key = (cust_name, full_address, reminder_level)
                     grouped[key].append({
                         'id': inv_id,
                         'number': inv_number or f"#{inv_id}",
@@ -3988,6 +4096,8 @@ def fetch_invoices(
                     i.invoice_date,
                     i.customer_name,
                     i.customer_address,
+                    i.customer_street,
+                    i.customer_city,
                     i.amount_cents,
                     i.uncollectible,
                     MAX(s.snapshot_date) as last_seen_snapshot,
@@ -4024,7 +4134,10 @@ def fetch_invoices(
                         WHERE cii.invoice_id = ist.id
                     ) THEN 1
                 ELSE 0
-                END as in_collective_invoice
+                END as in_collective_invoice,
+                cd.custom_name,
+                cd.custom_street,
+                cd.custom_city
             FROM invoice_status ist
             LEFT JOIN snapshot_files sf ON ist.id = sf.invoice_id AND sf.rn = 1
             LEFT JOIN customer_details cd ON ist.customer_name = cd.customer_name
@@ -4049,10 +4162,12 @@ def fetch_invoices(
             sql += """
                 AND (ist.customer_name LIKE ?
                      OR ist.invoice_number LIKE ?
-                     OR ist.customer_address LIKE ?)
+                     OR ist.customer_address LIKE ?
+                     OR ist.customer_street LIKE ?
+                     OR ist.customer_city LIKE ?)
             """
             pattern = f"%{query}%"
-            params.extend([pattern, pattern, pattern])
+            params.extend([pattern, pattern, pattern, pattern, pattern])
 
         # Require the invoice to be present in the requested snapshot range
         if snapshot_filter_active:
@@ -4090,18 +4205,39 @@ def fetch_invoices(
 
 
 def row_from_sql(row: sqlite3.Row) -> InvoiceRow:
+    # Get custom values from customer_details if available
+    custom_name = row["custom_name"] if "custom_name" in row.keys() and row["custom_name"] else None
+    custom_street = row["custom_street"] if "custom_street" in row.keys() and row["custom_street"] else None
+    custom_city = row["custom_city"] if "custom_city" in row.keys() and row["custom_city"] else None
+
+    # Get street and city if available
+    customer_street = custom_street or (row["customer_street"] if "customer_street" in row.keys() else None)
+    customer_city = custom_city or (row["customer_city"] if "customer_city" in row.keys() else None)
+
+    # Use custom_name if available, otherwise use original customer_name
+    customer_name = custom_name or row["customer_name"]
+
+    # If street and city are available, construct address from them
+    # Otherwise use the old customer_address field
+    if customer_street and customer_city:
+        customer_address = f"{customer_street}, {customer_city}"
+    else:
+        customer_address = row["customer_address"]
+
     return InvoiceRow(
         id=row["id"],
         invoice_number=row["invoice_number"],
         invoice_date=row["invoice_date"],
-        customer_name=row["customer_name"],
-        customer_address=row["customer_address"],
+        customer_name=customer_name,
+        customer_address=customer_address,
         amount_cents=row["amount_cents"],
         status=row["status"],
         last_seen_snapshot=row["last_seen_snapshot"],
         first_seen_snapshot=row["first_seen_snapshot"],
         file_path=row["file_path"] if "file_path" in row.keys() else None,
         in_collective_invoice=bool(row["in_collective_invoice"]) if "in_collective_invoice" in row.keys() else False,
+        customer_street=customer_street,
+        customer_city=customer_city,
     )
 
 
@@ -4179,6 +4315,7 @@ def fetch_all_customers(database_path: str) -> List[Dict]:
     """
     Fetch all unique customers from invoices with their details.
     Returns a list of customer dictionaries with name, address, email, notes.
+    Custom name/street/city from customer_details will override invoice data if present.
     """
     with sqlite3.connect(database_path) as conn:
         conn.row_factory = sqlite3.Row
@@ -4189,17 +4326,22 @@ def fetch_all_customers(database_path: str) -> List[Dict]:
             SELECT
                 i.customer_name,
                 i.customer_address,
+                i.customer_street,
+                i.customer_city,
                 cd.salutation,
                 cd.email,
                 cd.notes,
                 cd.never_remind,
                 cd.bank_debit,
                 cd.print_only,
+                cd.custom_name,
+                cd.custom_street,
+                cd.custom_city,
                 COUNT(DISTINCT i.id) as invoice_count,
                 SUM(i.amount_cents) as total_amount_cents
             FROM invoices i
             LEFT JOIN customer_details cd ON i.customer_name = cd.customer_name
-            GROUP BY i.customer_name, i.customer_address, cd.salutation, cd.email, cd.notes, cd.never_remind, cd.bank_debit, cd.print_only
+            GROUP BY i.customer_name, i.customer_address, i.customer_street, i.customer_city, cd.salutation, cd.email, cd.notes, cd.never_remind, cd.bank_debit, cd.print_only, cd.custom_name, cd.custom_street, cd.custom_city
             ORDER BY i.customer_name
         """
 
@@ -4207,9 +4349,20 @@ def fetch_all_customers(database_path: str) -> List[Dict]:
 
     customers = []
     for row in rows:
+        # Use custom values if available, otherwise fall back to invoice data
+        display_name = row["custom_name"] if row["custom_name"] else row["customer_name"]
+        display_street = row["custom_street"] if row["custom_street"] else (row["customer_street"] or "")
+        display_city = row["custom_city"] if row["custom_city"] else (row["customer_city"] or "")
+
         customers.append({
-            "customer_name": row["customer_name"],
+            "customer_name": row["customer_name"],  # Keep original for identification
+            "display_name": display_name,  # Display name (custom or original)
             "customer_address": row["customer_address"],
+            "customer_street": display_street,
+            "customer_city": display_city,
+            "custom_name": row["custom_name"] or "",  # For editing
+            "custom_street": row["custom_street"] or "",  # For editing
+            "custom_city": row["custom_city"] or "",  # For editing
             "salutation": row["salutation"] or "",
             "email": row["email"] or "",
             "notes": row["notes"] or "",
@@ -4220,9 +4373,9 @@ def fetch_all_customers(database_path: str) -> List[Dict]:
             "total_amount_eur": row["total_amount_cents"] / 100.0 if row["total_amount_cents"] else 0.0,
         })
 
-    # Sort by last name (last word of customer_name), case-insensitive
+    # Sort by last name (last word of display_name), case-insensitive
     def get_last_name(customer: Dict) -> str:
-        name = customer.get("customer_name", "")
+        name = customer.get("display_name", "")
         parts = name.strip().split()
         return parts[-1].lower() if parts else ""
 
@@ -4263,6 +4416,8 @@ def fetch_invoices_with_reminders(database_path: str, filter_reminded: Optional[
                     i.invoice_date,
                     i.customer_name,
                     i.customer_address,
+                    i.customer_street,
+                    i.customer_city,
                     i.amount_cents,
                     i.uncollectible,
                     MAX(s.snapshot_date) as last_seen_snapshot,
@@ -4322,7 +4477,10 @@ def fetch_invoices_with_reminders(database_path: str, filter_reminded: Optional[
                 lr.pdf_path as reminder_pdf_path,
                 CASE WHEN lr.invoice_id IS NOT NULL THEN 1 ELSE 0 END as has_reminders,
                 COALESCE(rgc.invoices_in_group, 1) as invoices_in_group,
-                COALESCE(cd.never_remind, 0) as never_remind
+                COALESCE(cd.never_remind, 0) as never_remind,
+                cd.custom_name,
+                cd.custom_street,
+                cd.custom_city
             FROM invoice_status ist
             LEFT JOIN invoice_files if ON ist.id = if.id
             LEFT JOIN last_reminder lr ON ist.id = lr.invoice_id
@@ -4355,12 +4513,34 @@ def fetch_invoices_with_reminders(database_path: str, filter_reminded: Optional[
             row["last_reminder_level"]
         )
 
+        # Get custom values from customer_details if available
+        custom_name = row["custom_name"] if "custom_name" in row.keys() and row["custom_name"] else None
+        custom_street = row["custom_street"] if "custom_street" in row.keys() and row["custom_street"] else None
+        custom_city = row["custom_city"] if "custom_city" in row.keys() and row["custom_city"] else None
+
+        # Get original street and city
+        original_street = row["customer_street"] if "customer_street" in row.keys() else None
+        original_city = row["customer_city"] if "customer_city" in row.keys() else None
+
+        # Use custom values if available, otherwise use originals
+        customer_street = custom_street or original_street
+        customer_city = custom_city or original_city
+
+        # Use custom_name if available, otherwise use original customer_name
+        customer_name = custom_name or row["customer_name"]
+
+        # Construct address from street and city (prefer custom over original)
+        if customer_street and customer_city:
+            customer_address = f"{customer_street}, {customer_city}"
+        else:
+            customer_address = row["customer_address"]
+
         invoice = InvoiceWithReminder(
             id=row["id"],
             invoice_number=row["invoice_number"],
             invoice_date=row["invoice_date"],
-            customer_name=row["customer_name"],
-            customer_address=row["customer_address"],
+            customer_name=customer_name,
+            customer_address=customer_address,
             amount_cents=row["amount_cents"],
             status=row["status"],
             last_seen_snapshot=row["last_seen_snapshot"],
@@ -4375,6 +4555,8 @@ def fetch_invoices_with_reminders(database_path: str, filter_reminded: Optional[
             has_reminders=bool(row["has_reminders"]),
             reminder_pdf_path=row["reminder_pdf_path"] if "reminder_pdf_path" in row.keys() else None,
             invoices_in_group=row["invoices_in_group"] if "invoices_in_group" in row.keys() else 1,
+            customer_street=customer_street,
+            customer_city=customer_city,
         )
         result.append(invoice)
 
@@ -4384,7 +4566,7 @@ def fetch_invoices_with_reminders(database_path: str, filter_reminded: Optional[
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Start the invoice web dashboard.")
     parser.add_argument("--host", default="127.0.0.1", help="Bind address (default: %(default)s)")
-    parser.add_argument("--port", type=int, default=5000, help="Port (default: %(default)s)")
+    parser.add_argument("--port", type=int, default=8080, help="Port (default: %(default)s)")
     parser.add_argument("--debug", action="store_true", help="Enable Flask debug mode.")
     parser.add_argument("--database", type=Path, default=DEFAULT_DB_PATH, help="Path to invoice_data.db")
     parser.add_argument("--root", type=Path, default=DEFAULT_INVOICE_ROOT, help="Root directory containing PDFs")

@@ -46,7 +46,8 @@
         <th class="sortable" data-sort="index" data-type="number"># <span class="sort-arrow"></span></th>
         <th class="sortable" data-sort="salutation" data-type="string">Anrede <span class="sort-arrow"></span></th>
         <th class="sortable sort-asc" data-sort="name" data-type="string">Name <span class="sort-arrow"></span></th>
-        <th class="sortable" data-sort="address" data-type="string">Adresse <span class="sort-arrow"></span></th>
+        <th class="sortable" data-sort="street" data-type="string">Straße <span class="sort-arrow"></span></th>
+        <th class="sortable" data-sort="city" data-type="string">PLZ / Ort <span class="sort-arrow"></span></th>
         <th class="sortable" data-sort="email" data-type="string">Email <span class="sort-arrow"></span></th>
         <th class="sortable" data-sort="notes" data-type="string">Bemerkungen <span class="sort-arrow"></span></th>
         <th class="sortable" data-sort="never_remind" data-type="checkbox">Nie mahnen! <span class="sort-arrow"></span></th>
@@ -67,10 +68,13 @@
           </select>
         </td>
         <td>
-          <strong>{{ customer.customer_name }}</strong>
+          <strong class="customer-name-link" onclick="openCustomerModal('{{ customer.customer_name }}')">{{ customer.display_name }}</strong>
         </td>
         <td>
-          <small class="muted">{{ customer.customer_address }}</small>
+          <small class="muted customer-street">{{ customer.customer_street }}</small>
+        </td>
+        <td>
+          <small class="muted customer-city">{{ customer.customer_city }}</small>
         </td>
         <td>
           <input type="email"
@@ -119,6 +123,83 @@
   </div>
 </section>
 {% endif %}
+
+<!-- Customer Edit Modal -->
+<div id="customerModal" class="modal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h2>Kundendaten bearbeiten</h2>
+      <span class="modal-close" onclick="closeCustomerModal()">&times;</span>
+    </div>
+    <div class="modal-body">
+      <form id="customerForm">
+        <div class="form-row">
+          <div class="form-group" style="flex: 0 0 120px;">
+            <label for="modal-salutation">Anrede</label>
+            <select id="modal-salutation" class="form-control">
+              <option value="">-</option>
+              <option value="Herr">Herr</option>
+              <option value="Frau">Frau</option>
+              <option value="Familie">Familie</option>
+            </select>
+          </div>
+          <div class="form-group" style="flex: 1;">
+            <label for="modal-customer-name">Name</label>
+            <input type="text" id="modal-customer-name" class="form-control">
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="modal-customer-street">Straße</label>
+            <input type="text" id="modal-customer-street" class="form-control">
+          </div>
+          <div class="form-group">
+            <label for="modal-customer-city">PLZ / Ort</label>
+            <input type="text" id="modal-customer-city" class="form-control">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="modal-email">Email</label>
+          <input type="email" id="modal-email" class="form-control" placeholder="email@example.com">
+        </div>
+
+        <div class="form-group">
+          <label for="modal-notes">Bemerkungen</label>
+          <textarea id="modal-notes" class="form-control" rows="2" placeholder="Bemerkungen..."></textarea>
+        </div>
+
+        <div class="checkboxes-row">
+          <div class="form-group-checkbox">
+            <label>
+              <input type="checkbox" id="modal-never-remind">
+              <span>Nie mahnen!</span>
+            </label>
+          </div>
+
+          <div class="form-group-checkbox">
+            <label>
+              <input type="checkbox" id="modal-bank-debit">
+              <span>Bankeinzug</span>
+            </label>
+          </div>
+
+          <div class="form-group-checkbox">
+            <label>
+              <input type="checkbox" id="modal-print-only">
+              <span>Nur Drucken</span>
+            </label>
+          </div>
+        </div>
+      </form>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeCustomerModal()">Abbrechen</button>
+      <button class="btn btn-primary" onclick="saveCustomer()">Speichern</button>
+    </div>
+  </div>
+</div>
 
 <script>
 async function saveAllChanges() {
@@ -300,14 +381,15 @@ function filterCustomers() {
 
   rows.forEach(row => {
     const customerName = row.querySelector('strong').textContent.toLowerCase();
-    const address = row.querySelector('.muted').textContent.toLowerCase();
+    const street = row.querySelector('.customer-street') ? row.querySelector('.customer-street').textContent.toLowerCase() : '';
+    const city = row.querySelector('.customer-city') ? row.querySelector('.customer-city').textContent.toLowerCase() : '';
     const emailInput = row.querySelector('.email-input');
     const email = emailInput ? emailInput.value.toLowerCase() : '';
     const salutationSelect = row.querySelector('.salutation-input');
     const hasSalutation = salutationSelect && salutationSelect.value !== '';
 
     // Check search filter
-    const matchesSearch = customerName.includes(filter) || address.includes(filter) || email.includes(filter);
+    const matchesSearch = customerName.includes(filter) || street.includes(filter) || city.includes(filter) || email.includes(filter);
 
     // Check no-salutation filter
     const matchesSalutationFilter = !noSalutationFilter || !hasSalutation;
@@ -369,8 +451,10 @@ function sortTable(column, type) {
         return row.querySelector('.salutation-input').value.toLowerCase();
       case 'name':
         return row.querySelector('strong').textContent.toLowerCase();
-      case 'address':
-        return row.querySelector('.muted').textContent.toLowerCase();
+      case 'street':
+        return row.querySelector('.customer-street') ? row.querySelector('.customer-street').textContent.toLowerCase() : '';
+      case 'city':
+        return row.querySelector('.customer-city') ? row.querySelector('.customer-city').textContent.toLowerCase() : '';
       case 'email':
         return row.querySelector('.email-input').value.toLowerCase();
       case 'notes':
@@ -439,6 +523,130 @@ document.addEventListener('DOMContentLoaded', function() {
       sortTable(this.dataset.sort, this.dataset.type);
     });
   });
+});
+
+// ===== Customer Modal Functions =====
+
+function openCustomerModal(customerName) {
+  const modal = document.getElementById('customerModal');
+  const row = document.querySelector(`tr[data-customer="${customerName}"]`);
+
+  if (!row) {
+    alert('Kunde nicht gefunden!');
+    return;
+  }
+
+  // Get customer data from the table row
+  const displayName = row.querySelector('.customer-name-link').textContent;
+  const customerStreet = row.querySelector('.customer-street') ? row.querySelector('.customer-street').textContent : '';
+  const customerCity = row.querySelector('.customer-city') ? row.querySelector('.customer-city').textContent : '';
+  const salutation = row.querySelector('.salutation-input').value;
+  const email = row.querySelector('.email-input').value;
+  const notes = row.querySelector('.notes-input').value;
+  const neverRemind = row.querySelector('.never-remind-checkbox').checked;
+  const bankDebit = row.querySelector('.bank-debit-checkbox').checked;
+  const printOnly = row.querySelector('.print-only-checkbox').checked;
+
+  // Fill modal form with customer data
+  const nameInput = document.getElementById('modal-customer-name');
+  nameInput.value = displayName;
+  nameInput.dataset.original = customerName;  // Store original name for API call
+  document.getElementById('modal-customer-street').value = customerStreet;
+  document.getElementById('modal-customer-city').value = customerCity;
+  document.getElementById('modal-salutation').value = salutation;
+  document.getElementById('modal-email').value = email;
+  document.getElementById('modal-notes').value = notes;
+  document.getElementById('modal-never-remind').checked = neverRemind;
+  document.getElementById('modal-bank-debit').checked = bankDebit;
+  document.getElementById('modal-print-only').checked = printOnly;
+
+  // Show modal
+  modal.style.display = 'flex';
+}
+
+function closeCustomerModal() {
+  const modal = document.getElementById('customerModal');
+  modal.style.display = 'none';
+}
+
+async function saveCustomer() {
+  const originalCustomerName = document.getElementById('modal-customer-name').dataset.original;
+  const customName = document.getElementById('modal-customer-name').value;
+  const customStreet = document.getElementById('modal-customer-street').value;
+  const customCity = document.getElementById('modal-customer-city').value;
+  const salutation = document.getElementById('modal-salutation').value;
+  const email = document.getElementById('modal-email').value;
+  const notes = document.getElementById('modal-notes').value;
+  const neverRemind = document.getElementById('modal-never-remind').checked;
+  const bankDebit = document.getElementById('modal-bank-debit').checked;
+  const printOnly = document.getElementById('modal-print-only').checked;
+
+  const saveButton = document.querySelector('#customerModal .btn-primary');
+
+  // Disable button during save
+  saveButton.disabled = true;
+  const originalText = saveButton.textContent;
+  saveButton.textContent = 'Speichert...';
+
+  try {
+    const response = await fetch(`/api/customers/${encodeURIComponent(originalCustomerName)}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        salutation: salutation,
+        email: email,
+        notes: notes,
+        never_remind: neverRemind,
+        bank_debit: bankDebit,
+        print_only: printOnly,
+        custom_name: customName,
+        custom_street: customStreet,
+        custom_city: customCity
+      })
+    });
+
+    const data = await response.json();
+
+    if (data.success) {
+      // Show success feedback
+      saveButton.textContent = '✓ Gespeichert';
+      saveButton.style.background = '#28a745';
+
+      setTimeout(() => {
+        closeCustomerModal();
+        saveButton.textContent = originalText;
+        saveButton.style.background = '';
+        saveButton.disabled = false;
+        // Reload page to show updated data
+        window.location.reload();
+      }, 1000);
+    } else {
+      alert('Fehler beim Speichern: ' + (data.error || 'Unbekannter Fehler'));
+      saveButton.textContent = originalText;
+      saveButton.disabled = false;
+    }
+  } catch (error) {
+    alert('Fehler beim Speichern: ' + error.message);
+    saveButton.textContent = originalText;
+    saveButton.disabled = false;
+  }
+}
+
+// Close modal when clicking outside of it
+window.onclick = function(event) {
+  const modal = document.getElementById('customerModal');
+  if (event.target === modal) {
+    closeCustomerModal();
+  }
+}
+
+// Close modal with Escape key
+document.addEventListener('keydown', function(event) {
+  if (event.key === 'Escape') {
+    closeCustomerModal();
+  }
 });
 </script>
 
@@ -574,18 +782,19 @@ document.addEventListener('DOMContentLoaded', function() {
 
 .customers-table th {
   background: #f8f9fa;
-  padding: 0.5rem 0.75rem;
+  padding: 0.3rem 0.5rem;
   text-align: left;
   font-weight: 600;
   color: #333;
   border-bottom: 2px solid #e0e0e0;
-  font-size: 0.85rem;
+  font-size: 0.75rem;
 }
 
 .customers-table th.sortable {
   cursor: pointer;
   user-select: none;
-  white-space: nowrap;
+  white-space: normal;
+  line-height: 1.2;
 }
 
 .customers-table th.sortable:hover {
@@ -622,9 +831,11 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 
 .customers-table td {
-  padding: 0.5rem 0.75rem;
+  padding: 0.3rem 0.5rem;
   border-bottom: 1px solid #e0e0e0;
   vertical-align: middle;
+  white-space: nowrap;
+  font-size: 0.8rem;
 }
 
 .customers-table tbody tr:hover {
@@ -633,10 +844,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
 .form-input {
   width: 100%;
-  padding: 0.4rem;
+  padding: 0.25rem 0.35rem;
   border: 1px solid #ddd;
   border-radius: 4px;
-  font-size: 0.85rem;
+  font-size: 0.75rem;
   font-family: inherit;
 }
 
@@ -661,11 +872,24 @@ document.addEventListener('DOMContentLoaded', function() {
   text-align: center;
 }
 
+/* Schmale Checkbox-Spalten */
+.customers-table th:nth-child(8),
+.customers-table th:nth-child(9),
+.customers-table th:nth-child(10),
+.customers-table td:nth-child(8),
+.customers-table td:nth-child(9),
+.customers-table td:nth-child(10) {
+  width: 50px;
+  max-width: 50px;
+  min-width: 50px;
+  text-align: center;
+}
+
 .never-remind-checkbox,
 .bank-debit-checkbox,
 .print-only-checkbox {
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
   cursor: pointer;
 }
 
@@ -676,7 +900,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 .muted {
   color: #6c757d;
-  font-size: 0.875rem;
+  font-size: 0.75rem;
 }
 
 .btn {
@@ -761,6 +985,178 @@ document.addEventListener('DOMContentLoaded', function() {
 .info-content p {
   color: #666;
   line-height: 1.6;
+}
+
+/* Customer name link styling */
+.customer-name-link {
+  cursor: pointer;
+  color: #123C69;
+  transition: color 0.2s;
+}
+
+.customer-name-link:hover {
+  color: #0d2d4f;
+  text-decoration: underline;
+}
+
+/* Modal styles */
+.modal {
+  display: none;
+  position: fixed;
+  z-index: 1000;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.5);
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.2s;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.modal-content {
+  background-color: white;
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  width: 90%;
+  max-width: 600px;
+  max-height: 90vh;
+  overflow-y: auto;
+  animation: slideIn 0.3s;
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateY(-50px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.modal-header {
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid #e0e0e0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #f8f9fa;
+  border-radius: 8px 8px 0 0;
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  color: #123C69;
+}
+
+.modal-close {
+  color: #666;
+  font-size: 1.75rem;
+  font-weight: bold;
+  cursor: pointer;
+  line-height: 1;
+  transition: color 0.2s;
+}
+
+.modal-close:hover {
+  color: #333;
+}
+
+.modal-body {
+  padding: 1.25rem 1.5rem;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.form-group {
+  margin-bottom: 0.75rem;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-weight: 600;
+  color: #333;
+  font-size: 0.85rem;
+}
+
+.form-control {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  font-family: inherit;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.form-control:focus {
+  outline: none;
+  border-color: #123C69;
+  box-shadow: 0 0 0 3px rgba(18, 60, 105, 0.1);
+}
+
+.form-control[readonly] {
+  background-color: #f8f9fa;
+  cursor: not-allowed;
+  color: #666;
+}
+
+.checkboxes-row {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.form-group-checkbox {
+  flex: 0 0 auto;
+  padding: 0.5rem 0.75rem;
+  background: #f8f9fa;
+  border-radius: 4px;
+}
+
+.form-group-checkbox label {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+  margin: 0;
+}
+
+.form-group-checkbox input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin-right: 0.5rem;
+  cursor: pointer;
+}
+
+.form-group-checkbox span {
+  font-size: 0.85rem;
+  color: #333;
+  white-space: nowrap;
+}
+
+.modal-footer {
+  padding: 1rem 1.5rem;
+  border-top: 1px solid #e0e0e0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  background: #f8f9fa;
+  border-radius: 0 0 8px 8px;
 }
 </style>
 
