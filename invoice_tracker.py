@@ -340,6 +340,20 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
 
+    # Create sammelrechnungen_rx table for tracking rX selections per month
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sammelrechnungen_rx (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT NOT NULL,
+            month TEXT NOT NULL,
+            selected INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+            UNIQUE(filename, month)
+        )
+        """
+    )
+
     # Create invoice_history table for tracking all events related to an invoice
     conn.execute(
         """
@@ -1384,6 +1398,23 @@ def process_pdf_file(conn: sqlite3.Connection, pdf_path: Path, root: Path) -> bo
     # Get or create snapshot
     snapshot_id = get_or_create_snapshot(conn, snapshot_date, folder_name)
 
+    # Check if this customer_name was previously corrected (has custom_name set)
+    # If so, we know this "bad" name belongs to an existing customer and skip fuzzy matching
+    name_was_corrected = conn.execute(
+        """
+        SELECT custom_name FROM customer_details
+        WHERE customer_name = ? AND custom_name IS NOT NULL AND custom_name != ''
+        """,
+        (record.customer_name,)
+    ).fetchone()
+
+    if name_was_corrected:
+        logging.info(
+            "Name '%s' wurde früher zu '%s' korrigiert - automatische Zuordnung",
+            record.customer_name,
+            name_was_corrected[0]
+        )
+
     # First, check if customer already exists EXACTLY (fast DB query)
     exact_match = conn.execute(
         """
@@ -1393,9 +1424,9 @@ def process_pdf_file(conn: sqlite3.Connection, pdf_path: Path, root: Path) -> bo
         (record.customer_name, record.customer_street, record.customer_city)
     ).fetchone()[0]
 
-    # Only do expensive fuzzy matching if no exact match exists
+    # Only do expensive fuzzy matching if no exact match exists AND name wasn't corrected before
     similar_customers = []
-    if exact_match == 0:
+    if exact_match == 0 and not name_was_corrected:
         # Check for similar customers BEFORE creating invoice
         similar_customers = find_similar_customers(
             conn,

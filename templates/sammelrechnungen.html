@@ -31,6 +31,9 @@
     <button class="btn btn-primary btn-sm" onclick="showLetterXpressDialog()" id="sendBtn" style="padding: 1rem 1.5rem; font-size: 1rem;">
       📮 Per LetterXpress versenden
     </button>
+    <button class="btn btn-success btn-sm" onclick="printRxSelected()" id="printRxBtn" style="padding: 1rem 1.5rem; font-size: 1rem;" disabled>
+      🖨️ rX drucken (0)
+    </button>
   </div>
 
   <!-- LetterXpress Options Modal -->
@@ -129,11 +132,12 @@
             <th>Erstellt am</th>
             <th>Größe</th>
             <th>LetterXpress</th>
+            <th style="width: 50px;" title="Für Druck auswählen">rX</th>
             <th>PDF</th>
           </tr>
         </thead>
         <tbody>
-          {% for invoice in invoices|sort(attribute='customer_name') %}
+          {% for invoice in invoices %}
           <tr class="{% if invoice.print_only %}print-only-row{% endif %}"
               data-print-only="{{ 'true' if invoice.print_only else 'false' }}">
             <td>
@@ -160,6 +164,15 @@
                   <small class="lx-date">{{ invoice.letterxpress_status.submitted_at }}</small>
                 </div>
               {% endif %}
+            </td>
+            <td>
+              <input type="checkbox" class="rx-checkbox"
+                     data-filename="{{ invoice.filename }}"
+                     data-month="{{ invoice.month }}"
+                     data-path="{{ invoice.relative_path }}"
+                     {% if invoice.rx_selected %}checked{% endif %}
+                     onchange="toggleRxSelection(this)"
+                     title="Für Druck auswählen">
             </td>
             <td>
               <a href="{{ url_for('serve_pdf', relative_path=invoice.relative_path) }}"
@@ -384,24 +397,104 @@ async function checkLetterXpressMode() {
   }
 }
 
-// Toggle print-only filter
-let printOnlyHidden = false;
+// Toggle print-only filter (3-way: all → hide print-only → only print-only)
+let printOnlyFilterState = 0; // 0 = alle, 1 = ohne Nur-Drucken, 2 = nur Nur-Drucken
 
 function togglePrintOnlyFilter() {
   const btn = document.getElementById('filterPrintOnlyBtn');
-  const printOnlyRows = document.querySelectorAll('.print-only-row');
+  const allRows = document.querySelectorAll('tr[data-print-only]');
 
-  printOnlyHidden = !printOnlyHidden;
+  printOnlyFilterState = (printOnlyFilterState + 1) % 3;
 
-  printOnlyRows.forEach(row => {
-    if (printOnlyHidden) {
-      row.style.display = 'none';
-    } else {
-      row.style.display = '';
+  allRows.forEach(row => {
+    const isPrintOnly = row.dataset.printOnly === 'true';
+
+    switch(printOnlyFilterState) {
+      case 0: // Alle anzeigen
+        row.style.display = '';
+        break;
+      case 1: // Nur-Drucken ausblenden
+        row.style.display = isPrintOnly ? 'none' : '';
+        break;
+      case 2: // Nur Nur-Drucken anzeigen
+        row.style.display = isPrintOnly ? '' : 'none';
+        break;
     }
   });
 
-  btn.textContent = printOnlyHidden ? '🖨️ Nur-Drucken einblenden' : '🖨️ Nur-Drucken ausblenden';
+  // Button-Text aktualisieren
+  switch(printOnlyFilterState) {
+    case 0:
+      btn.textContent = '🖨️ Nur-Drucken ausblenden';
+      break;
+    case 1:
+      btn.textContent = '🖨️ Nur Nur-Drucken';
+      break;
+    case 2:
+      btn.textContent = '🖨️ Alle anzeigen';
+      break;
+  }
+}
+
+// rX selection functions
+async function toggleRxSelection(checkbox) {
+  const filename = checkbox.dataset.filename;
+  const month = checkbox.dataset.month;
+  const selected = checkbox.checked;
+
+  try {
+    const response = await fetch('/api/sammelrechnungen-rx', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        filename: filename,
+        month: month,
+        selected: selected
+      })
+    });
+
+    const result = await response.json();
+    if (!result.success) {
+      console.error('Error saving rX selection:', result.error);
+      checkbox.checked = !selected; // Revert on error
+    }
+  } catch (error) {
+    console.error('Error saving rX selection:', error);
+    checkbox.checked = !selected; // Revert on error
+  }
+
+  updateRxCount();
+}
+
+function updateRxCount() {
+  const rxCheckboxes = document.querySelectorAll('.rx-checkbox:checked');
+  const printRxBtn = document.getElementById('printRxBtn');
+  const count = rxCheckboxes.length;
+
+  if (count > 0) {
+    printRxBtn.textContent = `🖨️ rX drucken (${count})`;
+    printRxBtn.disabled = false;
+  } else {
+    printRxBtn.textContent = '🖨️ rX drucken (0)';
+    printRxBtn.disabled = true;
+  }
+}
+
+async function printRxSelected() {
+  const rxCheckboxes = document.querySelectorAll('.rx-checkbox:checked');
+  if (rxCheckboxes.length === 0) {
+    alert('Keine rX-markierten Sammelrechnungen ausgewählt.');
+    return;
+  }
+
+  // Get all selected PDF paths
+  const pdfPaths = Array.from(rxCheckboxes).map(cb => cb.dataset.path);
+
+  // Open merged PDF for printing
+  const printUrl = `/pdf/merge?paths=${encodeURIComponent(pdfPaths.join(','))}`;
+  window.open(printUrl, '_blank');
 }
 
 // Initially collapse all groups and disable send button
@@ -410,6 +503,7 @@ document.addEventListener('DOMContentLoaded', function() {
   groups.forEach(group => group.classList.add('collapsed'));
   document.getElementById('toggleAllBtn').textContent = 'Alle ausklappen';
   updateSelectionCount();
+  updateRxCount();
 });
 </script>
 
@@ -569,16 +663,30 @@ document.addEventListener('DOMContentLoaded', function() {
   background: #5a6268;
 }
 
+.btn-success {
+  background: #28a745;
+  color: white;
+}
+
+.btn-success:hover:not(:disabled) {
+  background: #218838;
+}
+
 .btn-sm {
   padding: 0.25rem 0.75rem;
   font-size: 0.85rem;
 }
 
 .invoice-checkbox,
-.select-all-checkbox {
+.select-all-checkbox,
+.rx-checkbox {
   cursor: pointer;
   width: 18px;
   height: 18px;
+}
+
+.rx-checkbox:checked {
+  accent-color: #28a745;
 }
 
 .collapse-controls {

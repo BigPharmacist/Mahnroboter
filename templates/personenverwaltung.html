@@ -57,10 +57,10 @@
     </thead>
     <tbody>
       {% for customer in customers %}
-      <tr data-customer="{{ customer.customer_name }}">
+      <tr data-customer="{{ customer.customer_name }}" data-street="{{ customer.customer_street }}" data-city="{{ customer.customer_city }}" data-row-id="{{ loop.index }}">
         <td class="row-number">{{ loop.index }}</td>
         <td>
-          <select class="form-input salutation-input" data-customer="{{ customer.customer_name }}">
+          <select class="form-input salutation-input" data-customer="{{ customer.customer_name }}" data-street="{{ customer.customer_street }}" data-city="{{ customer.customer_city }}">
             <option value="">-</option>
             <option value="Herr" {% if customer.salutation == 'Herr' %}selected{% endif %}>Herr</option>
             <option value="Frau" {% if customer.salutation == 'Frau' %}selected{% endif %}>Frau</option>
@@ -68,7 +68,7 @@
           </select>
         </td>
         <td>
-          <strong class="customer-name-link" onclick="openCustomerModal('{{ customer.customer_name }}')">{{ customer.display_name }}</strong>
+          <strong class="customer-name-link" onclick="openCustomerModal({{ loop.index }})">{{ customer.display_name }}</strong>
         </td>
         <td>
           <small class="muted customer-street">{{ customer.customer_street }}</small>
@@ -527,9 +527,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // ===== Customer Modal Functions =====
 
-function openCustomerModal(customerName) {
+function openCustomerModal(rowId) {
   const modal = document.getElementById('customerModal');
-  const row = document.querySelector(`tr[data-customer="${customerName}"]`);
+  const row = document.querySelector(`tr[data-row-id="${rowId}"]`);
 
   if (!row) {
     alert('Kunde nicht gefunden!');
@@ -537,6 +537,7 @@ function openCustomerModal(customerName) {
   }
 
   // Get customer data from the table row
+  const customerName = row.dataset.customer;
   const displayName = row.querySelector('.customer-name-link').textContent;
   const customerStreet = row.querySelector('.customer-street') ? row.querySelector('.customer-street').textContent : '';
   const customerCity = row.querySelector('.customer-city') ? row.querySelector('.customer-city').textContent : '';
@@ -551,6 +552,7 @@ function openCustomerModal(customerName) {
   const nameInput = document.getElementById('modal-customer-name');
   nameInput.value = displayName;
   nameInput.dataset.original = customerName;  // Store original name for API call
+  nameInput.dataset.rowId = rowId;  // Store row ID for updating the correct row
   document.getElementById('modal-customer-street').value = customerStreet;
   document.getElementById('modal-customer-city').value = customerCity;
   document.getElementById('modal-salutation').value = salutation;

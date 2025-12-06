@@ -2228,12 +2228,14 @@ def create_app(config: Optional[dict] = None) -> Flask:
         """Display all collective invoices from the Sammelrechnungen folder."""
         sammelrechnungen_dir = BASE_DIR / "Sammelrechnungen"
 
-        # Fetch LetterXpress status and customer print_only flags from database
+        # Fetch LetterXpress status, customer print_only flags, and rX selections from database
         letterxpress_status = {}
         customer_print_only = {}
+        rx_selections = {}  # {(filename, month): True}
         try:
             with sqlite3.connect(app.config["DATABASE"]) as conn:
                 conn.row_factory = sqlite3.Row
+                init_db(conn)  # Ensure new table exists
                 rows = conn.execute(
                     "SELECT filename, letterxpress_job_id, mode, submitted_at FROM sammelrechnungen_letterxpress"
                 ).fetchall()
@@ -2254,10 +2256,31 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
                 # Fetch print_only status for all customers
                 customer_rows = conn.execute(
-                    "SELECT customer_name, print_only FROM customer_details WHERE print_only = 1"
+                    "SELECT customer_name, custom_name, print_only FROM customer_details WHERE print_only = 1"
                 ).fetchall()
                 for row in customer_rows:
-                    customer_print_only[row["customer_name"]] = True
+                    # Store both original name and normalized version (without parentheses)
+                    # because filenames may have parentheses removed
+                    import re
+                    name = row["customer_name"]
+                    customer_print_only[name] = True
+                    # Also store version without parentheses
+                    name_no_parens = re.sub(r'[()]', '', name).strip()
+                    name_no_parens = re.sub(r'\s+', ' ', name_no_parens)  # collapse multiple spaces
+                    customer_print_only[name_no_parens] = True
+                    # Also check custom_name if set
+                    if row["custom_name"]:
+                        customer_print_only[row["custom_name"]] = True
+                        custom_no_parens = re.sub(r'[()]', '', row["custom_name"]).strip()
+                        custom_no_parens = re.sub(r'\s+', ' ', custom_no_parens)
+                        customer_print_only[custom_no_parens] = True
+
+                # Fetch rX selections
+                rx_rows = conn.execute(
+                    "SELECT filename, month FROM sammelrechnungen_rx WHERE selected = 1"
+                ).fetchall()
+                for row in rx_rows:
+                    rx_selections[(row["filename"], row["month"])] = True
         except Exception as e:
             logging.error(f"Failed to fetch LetterXpress status: {e}")
 
@@ -2300,6 +2323,9 @@ def create_app(config: Optional[dict] = None) -> Flask:
                         # Check if customer has print_only flag
                         is_print_only = customer_print_only.get(customer_name, False)
 
+                        # Check if rX is selected for this invoice
+                        is_rx_selected = rx_selections.get((pdf_file.name, month), False)
+
                         collective_invoices.append({
                             "month": month,
                             "customer_name": customer_name,
@@ -2308,13 +2334,23 @@ def create_app(config: Optional[dict] = None) -> Flask:
                             "file_size_kb": file_size_kb,
                             "relative_path": str(relative_path),
                             "letterxpress_status": lx_status,
-                            "print_only": is_print_only
+                            "print_only": is_print_only,
+                            "rx_selected": is_rx_selected
                         })
 
         # Group by month for better display
         grouped_by_month = defaultdict(list)
         for invoice in collective_invoices:
             grouped_by_month[invoice["month"]].append(invoice)
+
+        # Sort each month's invoices by last name (last word of customer_name)
+        def get_last_name(name: str) -> str:
+            """Extract last name (last word) from customer name for sorting."""
+            parts = name.strip().split()
+            return parts[-1].lower() if parts else ""
+
+        for month in grouped_by_month:
+            grouped_by_month[month].sort(key=lambda inv: get_last_name(inv["customer_name"]))
 
         return render_template(
             "sammelrechnungen.html",
@@ -3562,6 +3598,110 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 "error": "Preisberechnung nicht verfügbar in API v3"
             }), 503
 
+    @app.route("/api/sammelrechnungen-rx", methods=["POST"])
+    def update_rx_selection():
+        """Update rX selection for a collective invoice."""
+        try:
+            data = request.json
+            if not data:
+                return jsonify({"success": False, "error": "Keine Daten übermittelt"}), 400
+
+            filename = data.get("filename")
+            month = data.get("month")
+            selected = data.get("selected", False)
+
+            if not filename or not month:
+                return jsonify({"success": False, "error": "Filename und Monat erforderlich"}), 400
+
+            invoices_logged = 0
+            with sqlite3.connect(app.config["DATABASE"]) as conn:
+                init_db(conn)
+                if selected:
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO sammelrechnungen_rx (filename, month, selected)
+                        VALUES (?, ?, 1)
+                        """,
+                        (filename, month)
+                    )
+                else:
+                    conn.execute(
+                        "DELETE FROM sammelrechnungen_rx WHERE filename = ? AND month = ?",
+                        (filename, month)
+                    )
+
+                # Log event in invoice history for all invoices in this collective invoice
+                conn.row_factory = sqlite3.Row
+                invoice_rows = conn.execute(
+                    """
+                    SELECT invoice_id FROM collective_invoice_items
+                    WHERE collective_invoice_filename = ?
+                    """,
+                    (filename,)
+                ).fetchall()
+
+                event_type = "RX_MARKED" if selected else "RX_UNMARKED"
+                for row in invoice_rows:
+                    log_invoice_event(conn, row["invoice_id"], event_type, {
+                        "collective_invoice": filename,
+                        "month": month
+                    })
+                    invoices_logged += 1
+
+                conn.commit()
+
+            return jsonify({"success": True, "invoices_logged": invoices_logged})
+        except Exception as e:
+            logging.error(f"Error updating rX selection: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/api/sammelrechnungen-rx/print", methods=["POST"])
+    def print_rx_selected():
+        """Get all rX-selected PDFs for a specific month and merge them for printing."""
+        try:
+            data = request.json
+            if not data:
+                return jsonify({"success": False, "error": "Keine Daten übermittelt"}), 400
+
+            month = data.get("month")
+            if not month:
+                return jsonify({"success": False, "error": "Monat erforderlich"}), 400
+
+            sammelrechnungen_dir = BASE_DIR / "Sammelrechnungen" / month
+
+            if not sammelrechnungen_dir.exists():
+                return jsonify({"success": False, "error": f"Verzeichnis für {month} nicht gefunden"}), 404
+
+            with sqlite3.connect(app.config["DATABASE"]) as conn:
+                conn.row_factory = sqlite3.Row
+                init_db(conn)
+                rows = conn.execute(
+                    "SELECT filename FROM sammelrechnungen_rx WHERE month = ? AND selected = 1",
+                    (month,)
+                ).fetchall()
+
+            if not rows:
+                return jsonify({"success": False, "error": "Keine rX-markierten Sammelrechnungen für diesen Monat"}), 404
+
+            # Collect PDF paths
+            pdf_paths = []
+            for row in rows:
+                pdf_path = sammelrechnungen_dir / row["filename"]
+                if pdf_path.exists():
+                    pdf_paths.append(str(pdf_path.relative_to(BASE_DIR)))
+
+            if not pdf_paths:
+                return jsonify({"success": False, "error": "Keine PDF-Dateien gefunden"}), 404
+
+            return jsonify({
+                "success": True,
+                "pdf_paths": pdf_paths,
+                "count": len(pdf_paths)
+            })
+        except Exception as e:
+            logging.error(f"Error getting rX-selected PDFs: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
     @app.route("/api/send-letterxpress", methods=["POST"])
     def send_via_letterxpress():
         """Send collective invoices via LetterXpress API."""
@@ -4056,6 +4196,55 @@ def create_app(config: Optional[dict] = None) -> Flask:
         except Exception as e:
             logging.error(f"Error toggling uncollectible status: {e}")
             return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/pdf/merge")
+    def merge_pdfs():
+        """Merge multiple PDFs into one for printing."""
+        from pypdf import PdfWriter
+        from io import BytesIO
+
+        paths_param = request.args.get("paths", "")
+        if not paths_param:
+            abort(400, "Keine PDF-Pfade angegeben")
+
+        paths = paths_param.split(",")
+        root = BASE_DIR.resolve()
+
+        pdf_writer = PdfWriter()
+
+        for relative_path in paths:
+            target = (root / relative_path.strip()).resolve()
+            try:
+                target.relative_to(root)
+            except ValueError:
+                continue  # Skip invalid paths
+            if not target.exists():
+                continue
+
+            try:
+                from pypdf import PdfReader
+                reader = PdfReader(str(target))
+                for page in reader.pages:
+                    pdf_writer.add_page(page)
+            except Exception as e:
+                logging.error(f"Error reading PDF {target}: {e}")
+                continue
+
+        if len(pdf_writer.pages) == 0:
+            abort(404, "Keine gültigen PDFs gefunden")
+
+        # Write merged PDF to memory
+        output = BytesIO()
+        pdf_writer.write(output)
+        output.seek(0)
+
+        return Response(
+            output.getvalue(),
+            mimetype="application/pdf",
+            headers={
+                "Content-Disposition": "inline; filename=Sammelrechnungen_Druck.pdf"
+            }
+        )
 
     @app.route("/pdf/<path:relative_path>")
     def serve_pdf(relative_path: str):
