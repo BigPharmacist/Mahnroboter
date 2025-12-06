@@ -25,6 +25,9 @@
     <button class="btn btn-secondary btn-sm" onclick="toggleAllGroups()" id="toggleAllBtn" style="padding: 1rem 1.5rem; font-size: 1rem;">
       Alle einklappen
     </button>
+    <button class="btn btn-secondary btn-sm" onclick="togglePrintOnlyFilter()" id="filterPrintOnlyBtn" style="padding: 1rem 1.5rem; font-size: 1rem;">
+      🖨️ Nur-Drucken ausblenden
+    </button>
     <button class="btn btn-primary btn-sm" onclick="showLetterXpressDialog()" id="sendBtn" style="padding: 1rem 1.5rem; font-size: 1rem;">
       📮 Per LetterXpress versenden
     </button>
@@ -131,7 +134,8 @@
         </thead>
         <tbody>
           {% for invoice in invoices|sort(attribute='customer_name') %}
-          <tr>
+          <tr class="{% if invoice.print_only %}print-only-row{% endif %}"
+              data-print-only="{{ 'true' if invoice.print_only else 'false' }}">
             <td>
               <input type="checkbox" class="invoice-checkbox"
                      data-path="{{ invoice.relative_path }}"
@@ -139,7 +143,12 @@
                      onchange="updateSelectionCount()">
             </td>
             <td class="row-number">{{ loop.index }}</td>
-            <td><strong>{{ invoice.customer_name }}</strong></td>
+            <td>
+              <strong>{{ invoice.customer_name }}</strong>
+              {% if invoice.print_only %}
+                <span class="print-only-badge" title="Nur Drucken - nicht per LetterXpress versenden">🖨️</span>
+              {% endif %}
+            </td>
             <td>{{ invoice.created_at }}</td>
             <td>{{ "%.1f"|format(invoice.file_size_kb) }} KB</td>
             <td>
@@ -373,6 +382,26 @@ async function checkLetterXpressMode() {
     console.error('Error fetching LetterXpress mode:', error);
     return 'unbekannt';
   }
+}
+
+// Toggle print-only filter
+let printOnlyHidden = false;
+
+function togglePrintOnlyFilter() {
+  const btn = document.getElementById('filterPrintOnlyBtn');
+  const printOnlyRows = document.querySelectorAll('.print-only-row');
+
+  printOnlyHidden = !printOnlyHidden;
+
+  printOnlyRows.forEach(row => {
+    if (printOnlyHidden) {
+      row.style.display = 'none';
+    } else {
+      row.style.display = '';
+    }
+  });
+
+  btn.textContent = printOnlyHidden ? '🖨️ Nur-Drucken einblenden' : '🖨️ Nur-Drucken ausblenden';
 }
 
 // Initially collapse all groups and disable send button
@@ -713,6 +742,26 @@ header h1 {
 .lx-date {
   color: #6c757d;
   font-size: 0.8rem;
+}
+
+/* Print-only badge */
+.print-only-badge {
+  margin-left: 0.5rem;
+  padding: 0.2rem 0.5rem;
+  background-color: #ffc107;
+  color: #856404;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: help;
+}
+
+.print-only-row {
+  background-color: #fff9e6 !important;
+}
+
+.print-only-row:hover {
+  background-color: #fff4d1 !important;
 }
 </style>
 {% endblock %}

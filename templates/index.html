@@ -34,7 +34,7 @@
     <!-- Filter Button - rechts oben -->
     <button type="button" class="filter-toggle-btn filter-toggle-btn-header" onclick="toggleFilterModal()">
       🔍 Filter
-      {% if invoice_date_filter != 'all' or status_filter != 'open' or email_filter != 'all' or uncollectible_filter != 'hide' %}
+      {% if invoice_date_filter not in ['all', ''] or status_filter != 'open' or email_filter != 'all' or uncollectible_filter != 'hide' %}
       <span class="filter-badge">aktiv</span>
       {% endif %}
     </button>
@@ -108,12 +108,12 @@
                       data-filter="invoice_date" data-value="all">
                 📋 Alle
               </button>
-              <button type="button" class="filter-btn {% if invoice_date_filter == 'current_month' %}active{% endif %}"
-                      data-filter="invoice_date" data-value="current_month">
+              <button type="button" class="filter-btn {% if 'current_month' in invoice_date_filter %}active{% endif %}"
+                      data-filter="invoice_date" data-value="current_month" data-allow-multi="true">
                 📅 Aktueller Monat
               </button>
-              <button type="button" class="filter-btn {% if invoice_date_filter == 'previous_month' %}active{% endif %}"
-                      data-filter="invoice_date" data-value="previous_month">
+              <button type="button" class="filter-btn {% if 'previous_month' in invoice_date_filter %}active{% endif %}"
+                      data-filter="invoice_date" data-value="previous_month" data-allow-multi="true">
                 📆 Vormonat
               </button>
             </div>
@@ -401,14 +401,49 @@
       btn.addEventListener('click', function() {
         const filterType = this.dataset.filter;
         const filterValue = this.dataset.value;
-
-        // Update state
-        filterState[filterType] = filterValue;
-
-        // Update active class for this filter group
+        const allowMulti = this.dataset.allowMulti === 'true';
         const siblingBtns = this.closest('.filter-buttons').querySelectorAll('.filter-btn');
-        siblingBtns.forEach(b => b.classList.remove('active'));
-        this.classList.add('active');
+
+        if (allowMulti && filterValue !== 'all') {
+          // Multi-select mode for invoice_date
+          const currentValues = filterState[filterType] === 'all' ? [] :
+                                filterState[filterType].split(',').filter(v => v && v !== 'all');
+
+          if (this.classList.contains('active')) {
+            // Deactivate this value
+            const newValues = currentValues.filter(v => v !== filterValue);
+            filterState[filterType] = newValues.length > 0 ? newValues.join(',') : 'all';
+            this.classList.remove('active');
+
+            // If no values selected, activate "all"
+            if (newValues.length === 0) {
+              siblingBtns.forEach(b => {
+                if (b.dataset.value === 'all') {
+                  b.classList.add('active');
+                }
+              });
+            }
+          } else {
+            // Activate this value
+            if (!currentValues.includes(filterValue)) {
+              currentValues.push(filterValue);
+            }
+            filterState[filterType] = currentValues.join(',');
+            this.classList.add('active');
+
+            // Deactivate "all" button
+            siblingBtns.forEach(b => {
+              if (b.dataset.value === 'all') {
+                b.classList.remove('active');
+              }
+            });
+          }
+        } else {
+          // Single-select mode (or "all" button clicked)
+          filterState[filterType] = filterValue;
+          siblingBtns.forEach(b => b.classList.remove('active'));
+          this.classList.add('active');
+        }
       });
     });
 

@@ -2181,8 +2181,9 @@ def create_app(config: Optional[dict] = None) -> Flask:
         """Display all collective invoices from the Sammelrechnungen folder."""
         sammelrechnungen_dir = BASE_DIR / "Sammelrechnungen"
 
-        # Fetch LetterXpress status from database
+        # Fetch LetterXpress status and customer print_only flags from database
         letterxpress_status = {}
+        customer_print_only = {}
         try:
             with sqlite3.connect(app.config["DATABASE"]) as conn:
                 conn.row_factory = sqlite3.Row
@@ -2203,6 +2204,13 @@ def create_app(config: Optional[dict] = None) -> Flask:
                         "mode": row["mode"],
                         "submitted_at": formatted_date
                     }
+
+                # Fetch print_only status for all customers
+                customer_rows = conn.execute(
+                    "SELECT customer_name, print_only FROM customer_details WHERE print_only = 1"
+                ).fetchall()
+                for row in customer_rows:
+                    customer_print_only[row["customer_name"]] = True
         except Exception as e:
             logging.error(f"Failed to fetch LetterXpress status: {e}")
 
@@ -2218,12 +2226,16 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     # Iterate through PDF files in the month folder
                     for pdf_file in sorted(month_folder.glob("*.pdf")):
                         # Extract customer name from filename
-                        # Format: Sammelrechnung_2025-11_Kundenname.pdf
+                        # Format: Sammelrechnung_2025-11_Kundenname_YYYYMMDD_HHMMSS.pdf
                         filename = pdf_file.stem  # Remove .pdf extension
-                        parts = filename.split("_", 2)  # Split into max 3 parts
+                        parts = filename.split("_")
 
-                        if len(parts) >= 3:
-                            customer_name = parts[2]  # Third part is customer name
+                        # Remove "Sammelrechnung", month, and timestamp (last 2 parts: YYYYMMDD and HHMMSS)
+                        if len(parts) >= 5:
+                            # Join all parts between month and timestamp
+                            customer_name = "_".join(parts[2:-2]).replace("_", " ")
+                        elif len(parts) >= 3:
+                            customer_name = parts[2].replace("_", " ")  # Fallback without timestamp
                         else:
                             customer_name = filename  # Fallback to full filename
 
@@ -2238,6 +2250,9 @@ def create_app(config: Optional[dict] = None) -> Flask:
                         # Get LetterXpress status for this file
                         lx_status = letterxpress_status.get(pdf_file.name, None)
 
+                        # Check if customer has print_only flag
+                        is_print_only = customer_print_only.get(customer_name, False)
+
                         collective_invoices.append({
                             "month": month,
                             "customer_name": customer_name,
@@ -2245,7 +2260,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
                             "created_at": created_at,
                             "file_size_kb": file_size_kb,
                             "relative_path": str(relative_path),
-                            "letterxpress_status": lx_status
+                            "letterxpress_status": lx_status,
+                            "print_only": is_print_only
                         })
 
         # Group by month for better display
@@ -2563,7 +2579,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
         try:
             # Create PDF writer
             pdf_writer = PdfWriter()
-            root = Path(app.config["INVOICE_ROOT"])
+            root = BASE_DIR
 
             # Add all PDFs to the writer
             for invoice in invoices_with_files:
@@ -2676,7 +2692,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     success_count = 0
                     failed_count = 0
                     processed_groups = 0
-                    root = Path(app.config["INVOICE_ROOT"])
+                    root = BASE_DIR
 
                     # Process each group only if SMTP connection is established
                     if not smtp_connection_failed:
@@ -2701,15 +2717,23 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
                             # Collect PDFs
                             pdf_paths = []
+                            missing_pdfs = []
                             for invoice in invoice_list:
                                 if not invoice.file_path:
+                                    missing_pdfs.append(f"{invoice.invoice_number or invoice.id} (kein Pfad)")
                                     continue
                                 pdf_path = root / invoice.file_path
                                 if pdf_path.exists():
                                     pdf_paths.append(pdf_path)
+                                else:
+                                    missing_pdfs.append(f"{invoice.invoice_number or invoice.id} (nicht gefunden: {invoice.file_path})")
 
                             if not pdf_paths:
                                 error_msg = f"Keine gültigen PDF-Dateien gefunden"
+                                if missing_pdfs:
+                                    error_msg += f" - Fehlende PDFs: {', '.join(missing_pdfs[:3])}"
+                                    if len(missing_pdfs) > 3:
+                                        error_msg += f" (+{len(missing_pdfs)-3} weitere)"
                                 yield f"data: {json.dumps({'type': 'error', 'customer': customer_name, 'message': error_msg})}\n\n"
                                 failed_count += len(invoice_list)
                                 processed_groups += 1
@@ -4050,6 +4074,7 @@ def fetch_invoices(
     - 'all': All invoice dates
     - 'current_month': Invoices from current calendar month
     - 'previous_month': Invoices from previous calendar month
+    - 'current_month,previous_month': Multiple selections (comma-separated)
 
     Custom date range:
     - from_month: Start month in YYYY-MM format
@@ -4186,12 +4211,21 @@ def fetch_invoices(
             sql += " AND (cd.email IS NULL OR cd.email = '')"
 
         # Apply invoice date filter (Rechnungsdatum)
-        if invoice_date_filter == "current_month":
-            # Current calendar month
-            sql += " AND strftime('%Y-%m', ist.invoice_date) = strftime('%Y-%m', 'now')"
-        elif invoice_date_filter == "previous_month":
-            # Previous calendar month
-            sql += " AND strftime('%Y-%m', ist.invoice_date) = strftime('%Y-%m', 'now', '-1 month')"
+        # Support multiple selections (comma-separated)
+        if invoice_date_filter and invoice_date_filter != "all":
+            selected_filters = [f.strip() for f in invoice_date_filter.split(',')]
+            date_conditions = []
+
+            if "current_month" in selected_filters:
+                date_conditions.append("strftime('%Y-%m', ist.invoice_date) = strftime('%Y-%m', 'now')")
+            if "previous_month" in selected_filters:
+                date_conditions.append("strftime('%Y-%m', ist.invoice_date) = strftime('%Y-%m', 'now', '-1 month')")
+
+            if date_conditions:
+                if len(date_conditions) == 1:
+                    sql += f" AND {date_conditions[0]}"
+                else:
+                    sql += f" AND ({' OR '.join(date_conditions)})"
 
         sort_key, sort_dir = normalize_sort_params(sort_by, sort_direction)
         order_expression = SORT_COLUMN_MAP[sort_key]
