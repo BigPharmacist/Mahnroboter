@@ -84,14 +84,10 @@ ASCII_FALLBACK_MAP = str.maketrans({
 
 SORT_COLUMN_MAP = {
     "date": "ist.invoice_date",
-    # Sort by last name (last word of customer_name, using custom_name if available)
-    "name": """LOWER(
-        CASE
-            WHEN INSTR(COALESCE(cd.custom_name, ist.customer_name), ' ') > 0
-            THEN TRIM(SUBSTR(COALESCE(cd.custom_name, ist.customer_name), INSTR(COALESCE(cd.custom_name, ist.customer_name), ' ') + 1))
-            ELSE COALESCE(cd.custom_name, ist.customer_name)
-        END
-    )""",
+    # Sort by last name (actual last word of the name, using custom_name if available)
+    # Implemented via a small SQLite UDF registered in fetch_invoices: LAST_WORD(text)
+    # NULLIF converts empty strings to NULL so COALESCE falls back to customer_name
+    "name": "LOWER(LAST_WORD(COALESCE(NULLIF(cd.custom_name, ''), ist.customer_name)))",
     "address": "LOWER(ist.customer_address)",
     "number": "COALESCE(ist.invoice_number, '')",
     "amount": "ist.amount_cents",
@@ -110,6 +106,27 @@ def normalize_sort_params(sort_by: Optional[str], sort_direction: Optional[str])
         direction = "desc"
 
     return sort_key, direction
+
+
+def sql_last_word(value: Optional[str]) -> str:
+    """SQLite UDF: return the last whitespace-separated word of a string.
+
+    - Treats None/empty as empty string
+    - Collapses multiple spaces
+    - Keeps hyphenated surnames intact (e.g., "Meyer-Lüdenscheidt")
+    """
+    if not value:
+        return ""
+    # Split on any whitespace and take the last non-empty token
+    parts = str(value).strip().split()
+    if not parts:
+        return ""
+    last = parts[-1]
+    # Normalize German umlauts for predictable ordering
+    try:
+        return last.translate(ASCII_FALLBACK_MAP)
+    except Exception:
+        return last
 
 
 @dataclass
@@ -271,6 +288,7 @@ def send_invoices_batch_email(
     salutation: str = None,
     smtp_connection: Optional[smtplib.SMTP] = None,
     smtp_config: Optional[SMTPConfig] = None,
+    invoice_list: Optional[List] = None,
 ) -> bool:
     """
     Send multiple invoices via email with a nice message from the pharmacy.
@@ -293,9 +311,11 @@ def send_invoices_batch_email(
         msg['From'] = f"{config.from_name} <{config.user}>"
         msg['To'] = to_email
 
-        # Format subject with month/year
-        subject = f"Ihre Monatsrechnungen {month_year}"
+        # Format subject - always the same
+        subject = "💊 Ihre aktuelle Monatsrechnung"
         msg['Subject'] = subject
+
+        invoice_count = len(invoice_pdf_paths)
 
         # Create email body with a nice message
         # Determine the greeting based on salutation
@@ -308,20 +328,47 @@ def send_invoices_batch_email(
         else:
             greeting = "Sehr geehrte Damen und Herren"
 
+        # Build invoice list if provided
+        invoice_details = ""
+        if invoice_list and len(invoice_list) > 0:
+            invoice_details = "\n\nFolgende Rechnungen sind im Anhang:\n"
+            for inv in invoice_list:
+                # Format date
+                invoice_date_str = inv.invoice_date if inv.invoice_date else "Unbekannt"
+                if invoice_date_str and len(invoice_date_str) >= 10:
+                    # Convert from ISO format (YYYY-MM-DD) to German format (DD.MM.YYYY)
+                    try:
+                        from datetime import datetime
+                        date_obj = datetime.fromisoformat(invoice_date_str)
+                        invoice_date_str = date_obj.strftime("%d.%m.%Y")
+                    except:
+                        pass
+
+                # Format amount
+                amount_str = f"{inv.amount_cents / 100:.2f} €"
+
+                # Format invoice number
+                inv_number = inv.invoice_number if inv.invoice_number else "ohne Nummer"
+
+                invoice_details += f"  - Rechnung Nr. {inv_number} vom {invoice_date_str}: {amount_str}\n"
+
         # Adjust message based on number of invoices
-        invoice_count = len(invoice_pdf_paths)
         if invoice_count == 1:
-            invoice_text = "anbei senden wir Ihnen Ihre aktuelle Monatsrechnung."
+            invoice_text = "anbei senden wir Ihnen Ihre aktuelle Rechnung."
         else:
-            invoice_text = f"anbei senden wir Ihnen Ihre {invoice_count} Monatsrechnungen."
+            invoice_text = "anbei senden wir Ihnen Ihre aktuelle Rechnung. Zu Ihrer Information haben wir noch weitere offene Rechnungen beigefügt."
 
         email_body = f"""{greeting},
 
-{invoice_text}
+{invoice_text}{invoice_details}
 
-Wir bedanken uns herzlich für Ihr Vertrauen und Ihre Treue. Sollten Sie Fragen zu Ihrer Rechnung haben, stehen wir Ihnen selbstverständlich gerne zur Verfügung.
+Wir bedanken uns herzlich für Ihr Vertrauen und Ihre Treue. ✨
+Sollten Sie Fragen zu Ihrer Rechnung haben, stehen wir Ihnen selbstverständlich gerne zur Verfügung.
 
-Hinweis: Falls Sie einen bequemen Bankeinzug wünschen, sprechen Sie uns gerne an. Wir richten Ihnen gerne ein SEPA-Lastschriftmandat ein.
+💬 Nutzen Sie bei Fragen zu Ihren Rechnungen WhatsApp unter: 06731-548846
+
+💡 Hinweis: Falls Sie einen bequemen Bankeinzug wünschen, sprechen Sie uns gerne an.
+Wir richten Ihnen gerne ein SEPA-Lastschriftmandat ein.
 
 Mit freundlichen Grüßen
 Ihr Team der Apotheke am Damm
@@ -2634,15 +2681,11 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     yield f"data: {json.dumps({'type': 'error', 'message': 'Keine Rechnungen zum Versenden gefunden'})}\n\n"
                     return
 
-                # Group invoices by customer and month
+                # Group invoices by customer only (all invoices for a customer in one email)
                 grouped_invoices = defaultdict(list)
 
                 for invoice in invoices:
-                    if invoice.invoice_date:
-                        month_year = invoice.invoice_date[:7]
-                    else:
-                        month_year = "unknown"
-                    key = (invoice.customer_name, month_year)
+                    key = invoice.customer_name
                     grouped_invoices[key].append(invoice)
 
                 total_groups = len(grouped_invoices)
@@ -2696,7 +2739,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
                     # Process each group only if SMTP connection is established
                     if not smtp_connection_failed:
-                        for (customer_name, month_year), invoice_list in grouped_invoices.items():
+                        for customer_name, invoice_list in grouped_invoices.items():
                             # Get customer email and salutation
                             customer_row = conn.execute(
                                 "SELECT email, salutation FROM customer_details WHERE customer_name = ?",
@@ -2748,14 +2791,16 @@ def create_app(config: Optional[dict] = None) -> Flask:
                             yield f"data: {json.dumps({'type': 'status', 'message': f'Sende E-Mail an {customer_email}... ({processed_groups + 1}/{total_groups})'})}\n\n"
 
                             # Send email (retry once if the SMTP server disconnects)
+                            # Pass invoice_list so we can include details in email
                             send_success = send_invoices_batch_email(
                                 customer_email,
                                 customer_name,
                                 pdf_paths,
-                                month_year,
+                                None,  # month_year - will be handled in the function
                                 customer_salutation,
                                 smtp_connection=ensure_smtp_connection(),
                                 smtp_config=smtp_config,
+                                invoice_list=invoice_list,  # Pass the invoice list for details
                             )
 
                             if not send_success:
@@ -2779,10 +2824,11 @@ def create_app(config: Optional[dict] = None) -> Flask:
                                     customer_email,
                                     customer_name,
                                     pdf_paths,
-                                    month_year,
+                                    None,  # month_year - will be handled in the function
                                     customer_salutation,
                                     smtp_connection=connection_for_retry,
                                     smtp_config=smtp_config,
+                                    invoice_list=invoice_list,  # Pass the invoice list for details
                                 )
 
                             if send_success:
@@ -2795,7 +2841,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                                         "EMAIL_SENT",
                                         {
                                             "email": customer_email,
-                                            "month": month_year,
+                                            "invoice_date": invoice.invoice_date,
                                             "pdf_count": len(pdf_paths)
                                         }
                                     )
@@ -4082,6 +4128,8 @@ def fetch_invoices(
     """
     with sqlite3.connect(database_path) as conn:
         conn.row_factory = sqlite3.Row
+        # Register helper used in ORDER BY to sort by surname
+        conn.create_function("LAST_WORD", 1, sql_last_word)
 
         # Get the latest snapshot date
         latest_snapshot_row = conn.execute(

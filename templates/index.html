@@ -1386,20 +1386,20 @@
           </div>
         </div>
 
-        <div class="pending-import-actions">
-          <button class="btn-resolve" data-import-id="${imp.id}" data-customer-data='${JSON.stringify(imp.similar_customers)}'>
-            ✓ Auswahl bestätigen
-          </button>
-        </div>
       `;
       importsList.appendChild(importDiv);
 
-      // Attach resolve handler
-      const resolveBtn = importDiv.querySelector('.btn-resolve');
-      if (resolveBtn) {
-        resolveBtn.addEventListener('click', function() {
-          const importId = parseInt(this.getAttribute('data-import-id'));
-          const customersData = JSON.parse(this.getAttribute('data-customer-data'));
+      // Update the resolve button in footer
+      const confirmBtn = document.getElementById('pending-confirm-btn');
+      if (confirmBtn) {
+        // Remove old event listeners by cloning
+        const newConfirmBtn = confirmBtn.cloneNode(true);
+        confirmBtn.parentNode.replaceChild(newConfirmBtn, confirmBtn);
+
+        // Add new event listener
+        newConfirmBtn.addEventListener('click', function() {
+          const importId = imp.id;
+          const customersData = imp.similar_customers;
           const selectedRadio = document.querySelector(`input[name="customer-${importId}"]:checked`);
 
           if (!selectedRadio) {
@@ -1592,10 +1592,15 @@
     <div class="modal-body" style="max-height: 65vh; overflow-y: auto;">
       <div id="pending-imports-list"></div>
     </div>
-    <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
-      <button id="pending-prev-btn" class="modal-nav-btn">← Zurück</button>
-      <button id="close-pending-imports-modal" class="modal-close-btn">Später</button>
-      <button id="pending-next-btn" class="modal-nav-btn">Weiter →</button>
+    <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
+      <button id="pending-confirm-btn" class="btn-resolve-footer">
+        ✓ Auswahl bestätigen
+      </button>
+      <div style="display: flex; gap: 0.5rem; align-items: center;">
+        <button id="pending-prev-btn" class="modal-nav-btn">← Zurück</button>
+        <button id="close-pending-imports-modal" class="modal-close-btn">Später</button>
+        <button id="pending-next-btn" class="modal-nav-btn">Weiter →</button>
+      </div>
     </div>
   </div>
 </div>
@@ -1812,7 +1817,7 @@
   text-align: center;
 }
 
-.btn-resolve {
+.btn-resolve, .btn-resolve-footer {
   background: #4CAF50;
   color: white;
   border: none;
@@ -1824,11 +1829,19 @@
   font-weight: 500;
 }
 
-.btn-resolve:hover {
+.btn-resolve-footer {
+  padding: 0.75rem 2rem;
+  font-size: 1rem;
+  font-weight: 600;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  white-space: nowrap;
+}
+
+.btn-resolve:hover, .btn-resolve-footer:hover {
   background: #45a049;
 }
 
-.btn-resolve:active {
+.btn-resolve:active, .btn-resolve-footer:active {
   background: #3d8b40;
 }
 

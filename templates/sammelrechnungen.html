@@ -465,11 +465,20 @@ document.addEventListener('DOMContentLoaded', function() {
 .customer-invoices {
   border-top: 1px solid #eee;
   padding: 1rem;
+  max-height: 600px;
+  overflow-y: auto;
 }
 
 .invoice-table {
   width: 100%;
   border-collapse: collapse;
+}
+
+.invoice-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: #f8f9fa;
 }
 
 .invoice-table th {
@@ -478,11 +487,17 @@ document.addEventListener('DOMContentLoaded', function() {
   text-align: left;
   font-weight: 600;
   border-bottom: 2px solid #dee2e6;
+  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.05);
 }
 
 .invoice-table td {
   padding: 0.75rem;
   border-bottom: 1px solid #eee;
+}
+
+.invoice-table tbody {
+  position: relative;
+  z-index: 1;
 }
 
 .invoice-table tr:hover {
