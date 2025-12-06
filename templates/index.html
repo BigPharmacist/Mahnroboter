@@ -323,7 +323,12 @@
             <td class="row-number">{{ loop.index }}</td>
             <td data-value="{{ invoice.invoice_date }}">{{ invoice.invoice_date|german_date }}</td>
             <td data-value="{{ invoice.customer_name }}">{{ invoice.customer_name }}</td>
-            <td data-value="{{ invoice.customer_address }}">{{ invoice.customer_address }}</td>
+            <td data-value="{{ invoice.customer_address }}">
+              {{ invoice.customer_address }}
+              {% if invoice.address_incomplete %}
+                <span class="incomplete-address-badge" title="Adresse wurde automatisch vervollständigt - bitte überprüfen!">⚠️ Adresse unvollständig</span>
+              {% endif %}
+            </td>
             <td data-value="{{ invoice.invoice_number or '' }}">{{ invoice.invoice_number or "–" }}</td>
             <td class="amount" data-value="{{ invoice.amount_eur }}">{{ "%.2f"|format(invoice.amount_eur) }} €</td>
             <td data-value="{{ invoice.status }}">
@@ -1906,6 +1911,24 @@ mark.diff-delete {
 .modal-close-btn:hover {
   color: #333;
   text-decoration: underline;
+}
+
+/* Incomplete address warning badge */
+.incomplete-address-badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0.2rem 0.5rem;
+  background-color: #ff9800;
+  color: white;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: help;
+  white-space: nowrap;
+}
+
+.incomplete-address-badge:hover {
+  background-color: #f57c00;
 }
 </style>
 

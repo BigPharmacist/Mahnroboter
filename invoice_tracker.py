@@ -59,6 +59,7 @@ class InvoiceRecord:
     amount_cents: int
     customer_street: Optional[str] = None
     customer_city: Optional[str] = None
+    address_incomplete: bool = False  # True if address was auto-completed
 
 
 def parse_args() -> argparse.Namespace:
@@ -142,6 +143,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             invoice_date TEXT NOT NULL,
             amount_cents INTEGER NOT NULL,
             currency TEXT NOT NULL DEFAULT 'EUR',
+            address_incomplete INTEGER DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
             UNIQUE(invoice_number, customer_name, amount_cents)
         )
@@ -455,29 +457,82 @@ def is_storno_document(text: str) -> bool:
     return False
 
 
-def extract_customer(lines: list[str]) -> tuple[str, str, str]:
+def extract_customer(lines: list[str]) -> tuple[str, str, str, bool]:
     """Extract customer name, street, and city separately from invoice lines.
 
     Returns:
-        tuple[str, str, str]: (customer_name, customer_street, customer_city)
+        tuple[str, str, str, bool]: (customer_name, customer_street, customer_city, address_incomplete)
     """
     # Try to find customer info by looking for address pattern with name followed by street and city
     # Format: Name, Street + Number, PLZ + City
     for idx in range(len(lines) - 2):
         name = lines[idx].strip()
         addr_line1 = lines[idx + 1].strip()
-        addr_line2 = lines[idx + 2].strip()
+        addr_line2 = lines[idx + 2].strip() if idx + 2 < len(lines) else ""
 
-        # Check if this looks like a valid address:
-        # - addr_line2 should start with 5 digits (PLZ)
-        # - name should not contain "Apotheke" (sender address)
-        # - Skip if name contains "Datum:" or other keywords
+        # Skip sender address and metadata lines
+        skip_keywords = ["Datum:", "DECKBLATT", "Tel", "Fax", "Rechnung", "Kunden-Nr"]
+        if any(keyword in name for keyword in skip_keywords):
+            continue
+
+        # Check if this looks like a valid address with PLZ + Stadt
         if (addr_line2 and len(addr_line2) >= 5 and addr_line2[:5].isdigit()
-            and name and "Apotheke" not in name and "Datum:" not in name
-            and "DECKBLATT" not in name and "Tel" not in name and "Fax" not in name):
+            and name and "Apotheke am Damm" not in name):
             street = addr_line1
             city = addr_line2
-            return name, street, city
+            return name, street, city, False  # Complete address
+
+    # Second pass: Look for addresses WITHOUT "Apotheke am Damm" restriction
+    # This handles B2B invoices (Apotheke, Praxis, etc.)
+    for idx in range(len(lines) - 2):
+        name = lines[idx].strip()
+        addr_line1 = lines[idx + 1].strip()
+        addr_line2 = lines[idx + 2].strip() if idx + 2 < len(lines) else ""
+
+        skip_keywords = ["Datum:", "DECKBLATT", "Tel", "Fax", "Rechnung", "Kunden-Nr", "Apotheke am Damm"]
+        if any(keyword in name for keyword in skip_keywords):
+            continue
+
+        # Valid address with PLZ + Stadt
+        if addr_line2 and len(addr_line2) >= 5 and addr_line2[:5].isdigit() and name:
+            street = addr_line1
+            city = addr_line2
+            return name, street, city, False  # Complete address (B2B)
+
+    # Third pass: Look for incomplete addresses (only street, missing PLZ+Stadt)
+    # This is more restrictive - only matches if the pattern really looks like a customer address
+    for idx in range(len(lines) - 1):
+        name = lines[idx].strip()
+        addr_line1 = lines[idx + 1].strip()
+        addr_line2 = lines[idx + 2].strip() if idx + 2 < len(lines) else ""
+
+        skip_keywords = ["Datum:", "DECKBLATT", "Tel", "Fax", "Rechnung", "Kunden-Nr", "Apotheke am Damm", "Medikation", "Am Damm"]
+        if any(keyword in name for keyword in skip_keywords):
+            continue
+
+        # Skip if addr_line1 looks like sender address
+        if any(keyword in addr_line1 for keyword in skip_keywords):
+            continue
+
+        # Additional check: Skip if name looks like a street (e.g., "Am Damm 17")
+        # Street names typically start with prepositions or have numbers
+        if (name.startswith(("Am ", "An ", "Auf ", "In ", "Zur ", "Zum ")) or
+            any(c.isdigit() for c in name)):
+            continue
+
+        # Check if this looks like a street address (contains letters and numbers)
+        # and the name doesn't look like metadata
+        if (name and len(name) > 3 and addr_line1 and
+            # Street should have at least one letter and possibly a number
+            any(c.isalpha() for c in addr_line1) and
+            # But addr_line2 either doesn't exist or doesn't start with PLZ
+            (not addr_line2 or (len(addr_line2) < 5 or not addr_line2[:5].isdigit()))):
+
+            # Additional check: name should look like a person or business name
+            # Avoid matching random text like "Menge PZN" etc.
+            if not any(kw in name for kw in ["Menge", "PZN", "Artikel", "Pack", "MwSt", "Netto", "Summe"]):
+                logging.warning(f"⚠️ Unvollständige Adresse für '{name}' (nur Straße '{addr_line1}') - verwende Standard-Stadt 'Alzey'")
+                return name, addr_line1, "55232 Alzey", True  # Incomplete address!
 
     # Fallback: try old method with markers
     for idx, raw in enumerate(lines):
@@ -489,14 +544,22 @@ def extract_customer(lines: list[str]) -> tuple[str, str, str]:
                 if "Datum:" in name or re.match(r'\d{2}\.\d{2}\.\d{4}', name):
                     continue
                 addr_line1 = lines[idx + 2].strip()
-                addr_line2 = lines[idx + 3].strip()
+                addr_line2 = lines[idx + 3].strip() if idx + 3 < len(lines) else ""
             except IndexError as exc:
                 raise ValueError("Unvollständige Adresse im PDF") from exc
-            if not name or not addr_line1 or not addr_line2:
+            if not name or not addr_line1:
                 raise ValueError("Adresse enthält leere Zeilen")
+
+            # If addr_line2 is missing or incomplete, use default
+            address_incomplete = False
+            if not addr_line2 or (len(addr_line2) >= 5 and not addr_line2[:5].isdigit()):
+                logging.warning(f"⚠️ Unvollständige Adresse für '{name}' - verwende Standard-Stadt 'Alzey'")
+                addr_line2 = "55232 Alzey"
+                address_incomplete = True
+
             street = addr_line1
             city = addr_line2
-            return name, street, city
+            return name, street, city, address_incomplete
     raise ValueError("Keine Empfängeradresse gefunden")
 
 
@@ -563,7 +626,7 @@ def parse_invoice(pdf_path: Path, storage_path: str) -> InvoiceRecord:
     # Use robust extraction method
     amount_cents = extract_total_amount_robust(text)
 
-    customer_name, customer_street, customer_city = extract_customer(lines)
+    customer_name, customer_street, customer_city, address_incomplete = extract_customer(lines)
 
     # For backward compatibility, also set customer_address
     customer_address = f"{customer_street}, {customer_city}"
@@ -577,6 +640,7 @@ def parse_invoice(pdf_path: Path, storage_path: str) -> InvoiceRecord:
         amount_cents=amount_cents,
         customer_street=customer_street,
         customer_city=customer_city,
+        address_incomplete=address_incomplete,
     )
 
 
@@ -619,9 +683,10 @@ def get_or_create_invoice(conn: sqlite3.Connection, record: InvoiceRecord) -> in
             invoice_date,
             amount_cents,
             customer_street,
-            customer_city
+            customer_city,
+            address_incomplete
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record.invoice_number,
@@ -631,6 +696,7 @@ def get_or_create_invoice(conn: sqlite3.Connection, record: InvoiceRecord) -> in
             record.amount_cents,
             record.customer_street,
             record.customer_city,
+            1 if record.address_incomplete else 0,
         )
     )
     return cursor.lastrowid

@@ -1509,6 +1509,7 @@ class InvoiceRow:
     uncollectible: int = 0  # Whether this invoice is marked as uncollectible
     customer_street: Optional[str] = None
     customer_city: Optional[str] = None
+    address_incomplete: bool = False  # Whether the address was auto-completed
 
     @property
     def amount_eur(self) -> float:
@@ -2020,6 +2021,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
         custom_name = data.get("custom_name", "")
         custom_street = data.get("custom_street", "")
         custom_city = data.get("custom_city", "")
+        clear_address_incomplete = data.get("clear_address_incomplete", False)
 
         try:
             with sqlite3.connect(app.config["DATABASE"]) as conn:
@@ -2043,6 +2045,18 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     """,
                     (customer_name, salutation, email, notes, never_remind, bank_debit, print_only, custom_name, custom_street, custom_city)
                 )
+
+                # If user wants to clear the address_incomplete flag, update all invoices for this customer
+                if clear_address_incomplete:
+                    conn.execute(
+                        """
+                        UPDATE invoices
+                        SET address_incomplete = 0
+                        WHERE customer_name = ?
+                        """,
+                        (customer_name,)
+                    )
+
                 conn.commit()
 
                 return jsonify({
@@ -4362,6 +4376,7 @@ def fetch_invoices(
                     i.customer_city,
                     i.amount_cents,
                     i.uncollectible,
+                    i.address_incomplete,
                     MAX(s.snapshot_date) as last_seen_snapshot,
                     MIN(s.snapshot_date) as first_seen_snapshot,
                     CASE
@@ -4509,6 +4524,7 @@ def row_from_sql(row: sqlite3.Row) -> InvoiceRow:
         in_collective_invoice=bool(row["in_collective_invoice"]) if "in_collective_invoice" in row.keys() else False,
         customer_street=customer_street,
         customer_city=customer_city,
+        address_incomplete=bool(row["address_incomplete"]) if "address_incomplete" in row.keys() else False,
     )
 
 
@@ -4599,6 +4615,7 @@ def fetch_all_customers(database_path: str) -> List[Dict]:
                 i.customer_address,
                 i.customer_street,
                 i.customer_city,
+                MAX(i.address_incomplete) as address_incomplete,
                 cd.salutation,
                 cd.email,
                 cd.notes,
@@ -4640,6 +4657,7 @@ def fetch_all_customers(database_path: str) -> List[Dict]:
             "never_remind": row["never_remind"] or 0,
             "bank_debit": row["bank_debit"] or 0,
             "print_only": row["print_only"] or 0,
+            "address_incomplete": row["address_incomplete"] or 0,
             "invoice_count": row["invoice_count"],
             "total_amount_eur": row["total_amount_cents"] / 100.0 if row["total_amount_cents"] else 0.0,
         })

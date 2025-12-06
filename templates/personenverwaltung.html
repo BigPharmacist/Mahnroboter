@@ -57,7 +57,7 @@
     </thead>
     <tbody>
       {% for customer in customers %}
-      <tr data-customer="{{ customer.customer_name }}" data-street="{{ customer.customer_street }}" data-city="{{ customer.customer_city }}" data-row-id="{{ loop.index }}">
+      <tr data-customer="{{ customer.customer_name }}" data-street="{{ customer.customer_street }}" data-city="{{ customer.customer_city }}" data-address-incomplete="{{ customer.address_incomplete }}" data-row-id="{{ loop.index }}">
         <td class="row-number">{{ loop.index }}</td>
         <td>
           <select class="form-input salutation-input" data-customer="{{ customer.customer_name }}" data-street="{{ customer.customer_street }}" data-city="{{ customer.customer_city }}">
@@ -72,6 +72,9 @@
         </td>
         <td>
           <small class="muted customer-street">{{ customer.customer_street }}</small>
+          {% if customer.address_incomplete %}
+            <span class="incomplete-address-badge" title="Adresse wurde automatisch vervollständigt - bitte überprüfen!">⚠️</span>
+          {% endif %}
         </td>
         <td>
           <small class="muted customer-city">{{ customer.customer_city }}</small>
@@ -151,7 +154,10 @@
 
         <div class="form-row">
           <div class="form-group">
-            <label for="modal-customer-street">Straße</label>
+            <label for="modal-customer-street">
+              Straße
+              <span id="modal-address-incomplete-badge" class="incomplete-address-badge-modal" style="display: none;" title="Adresse wurde automatisch vervollständigt">⚠️ Unvollständig</span>
+            </label>
             <input type="text" id="modal-customer-street" class="form-control">
           </div>
           <div class="form-group">
@@ -189,6 +195,13 @@
             <label>
               <input type="checkbox" id="modal-print-only">
               <span>Nur Drucken</span>
+            </label>
+          </div>
+
+          <div class="form-group-checkbox" id="modal-clear-incomplete-container" style="display: none;">
+            <label>
+              <input type="checkbox" id="modal-clear-address-incomplete">
+              <span>✓ Adresse korrigiert</span>
             </label>
           </div>
         </div>
@@ -547,6 +560,7 @@ function openCustomerModal(rowId) {
   const neverRemind = row.querySelector('.never-remind-checkbox').checked;
   const bankDebit = row.querySelector('.bank-debit-checkbox').checked;
   const printOnly = row.querySelector('.print-only-checkbox').checked;
+  const addressIncomplete = row.dataset.addressIncomplete === '1' || row.dataset.addressIncomplete === 'True';
 
   // Fill modal form with customer data
   const nameInput = document.getElementById('modal-customer-name');
@@ -561,6 +575,21 @@ function openCustomerModal(rowId) {
   document.getElementById('modal-never-remind').checked = neverRemind;
   document.getElementById('modal-bank-debit').checked = bankDebit;
   document.getElementById('modal-print-only').checked = printOnly;
+
+  // Show/hide address incomplete badge and checkbox
+  const badge = document.getElementById('modal-address-incomplete-badge');
+  const clearCheckboxContainer = document.getElementById('modal-clear-incomplete-container');
+  const clearCheckbox = document.getElementById('modal-clear-address-incomplete');
+
+  if (addressIncomplete) {
+    badge.style.display = 'inline';
+    clearCheckboxContainer.style.display = 'block';
+    clearCheckbox.checked = false;
+  } else {
+    badge.style.display = 'none';
+    clearCheckboxContainer.style.display = 'none';
+    clearCheckbox.checked = false;
+  }
 
   // Show modal
   modal.style.display = 'flex';
@@ -582,6 +611,7 @@ async function saveCustomer() {
   const neverRemind = document.getElementById('modal-never-remind').checked;
   const bankDebit = document.getElementById('modal-bank-debit').checked;
   const printOnly = document.getElementById('modal-print-only').checked;
+  const clearAddressIncomplete = document.getElementById('modal-clear-address-incomplete').checked;
 
   const saveButton = document.querySelector('#customerModal .btn-primary');
 
@@ -605,7 +635,8 @@ async function saveCustomer() {
         print_only: printOnly,
         custom_name: customName,
         custom_street: customStreet,
-        custom_city: customCity
+        custom_city: customCity,
+        clear_address_incomplete: clearAddressIncomplete
       })
     });
 
@@ -999,6 +1030,41 @@ document.addEventListener('keydown', function(event) {
 .customer-name-link:hover {
   color: #0d2d4f;
   text-decoration: underline;
+}
+
+/* Incomplete address badge */
+.incomplete-address-badge {
+  display: inline-block;
+  margin-left: 0.25rem;
+  padding: 0.1rem 0.25rem;
+  background-color: #ff9800;
+  color: white;
+  border-radius: 3px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  cursor: help;
+  white-space: nowrap;
+}
+
+.incomplete-address-badge:hover {
+  background-color: #f57c00;
+}
+
+.incomplete-address-badge-modal {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0.2rem 0.5rem;
+  background-color: #ff9800;
+  color: white;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: help;
+  white-space: nowrap;
+}
+
+.incomplete-address-badge-modal:hover {
+  background-color: #f57c00;
 }
 
 /* Modal styles */

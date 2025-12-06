@@ -19,6 +19,10 @@
   </div>
 </section>
 
+<section class="search-section">
+  <input type="text" id="searchInput" placeholder="Suche nach Kundenname..." class="search-input">
+</section>
+
 {% if grouped_by_month %}
 <section class="customers-container">
   <div class="collapse-controls">
@@ -497,6 +501,30 @@ async function printRxSelected() {
   window.open(printUrl, '_blank');
 }
 
+// Search functionality
+function filterBySearch() {
+  const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+  const allRows = document.querySelectorAll('.invoice-table tbody tr');
+
+  allRows.forEach(row => {
+    const customerName = row.querySelector('td:nth-child(3) strong')?.textContent.toLowerCase() || '';
+    const matches = customerName.includes(searchTerm);
+
+    // Only hide/show if not already filtered by print-only
+    if (row.style.display !== 'none' || matches) {
+      row.style.display = matches ? '' : 'none';
+    }
+  });
+}
+
+// Add event listener for search input
+document.addEventListener('DOMContentLoaded', function() {
+  const searchInput = document.getElementById('searchInput');
+  if (searchInput) {
+    searchInput.addEventListener('input', filterBySearch);
+  }
+});
+
 // Initially collapse all groups and disable send button
 document.addEventListener('DOMContentLoaded', function() {
   const groups = document.querySelectorAll('.customer-group');
@@ -701,11 +729,12 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 
 .stat-card {
-  flex: 1;
   background: white;
   padding: 1.5rem;
   border-radius: 8px;
   border: 1px solid #ddd;
+  max-width: 250px;
+  min-width: 200px;
 }
 
 .stat-label {
@@ -885,6 +914,31 @@ header h1 {
 
 .print-only-row:hover {
   background-color: #fff4d1 !important;
+}
+
+/* Search section */
+.search-section {
+  margin-bottom: 2rem;
+}
+
+.search-input {
+  width: 100%;
+  max-width: 500px;
+  padding: 0.75rem 1rem;
+  font-size: 1rem;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: #007bff;
+  box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
+}
+
+.search-input::placeholder {
+  color: #999;
 }
 </style>
 {% endblock %}
