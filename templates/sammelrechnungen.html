@@ -35,8 +35,8 @@
     <button class="btn btn-primary btn-sm" onclick="showLetterXpressDialog()" id="sendBtn" style="padding: 1rem 1.5rem; font-size: 1rem;">
       📮 Per LetterXpress versenden
     </button>
-    <button class="btn btn-success btn-sm" onclick="printRxSelected()" id="printRxBtn" style="padding: 1rem 1.5rem; font-size: 1rem;" disabled>
-      🖨️ rX drucken (0)
+    <button class="btn btn-success btn-sm" onclick="printSelected()" id="printBtn" style="padding: 1rem 1.5rem; font-size: 1rem;" disabled>
+      🖨️ Markierte drucken (0)
     </button>
   </div>
 
@@ -136,7 +136,7 @@
             <th>Erstellt am</th>
             <th>Größe</th>
             <th>LetterXpress</th>
-            <th style="width: 50px;" title="Für Druck auswählen">rX</th>
+            <th style="width: 50px;" title="Dauerhafte Markierung">rX</th>
             <th>PDF</th>
           </tr>
         </thead>
@@ -176,7 +176,7 @@
                      data-path="{{ invoice.relative_path }}"
                      {% if invoice.rx_selected %}checked{% endif %}
                      onchange="toggleRxSelection(this)"
-                     title="Für Druck auswählen">
+                     title="Dauerhafte Markierung">
             </td>
             <td>
               <a href="{{ url_for('serve_pdf', relative_path=invoice.relative_path) }}"
@@ -231,13 +231,18 @@ function toggleAllInGroup(checkbox) {
 function updateSelectionCount() {
   const selectedCount = document.querySelectorAll('.invoice-checkbox:checked').length;
   const sendBtn = document.getElementById('sendBtn');
+  const printBtn = document.getElementById('printBtn');
 
   if (selectedCount > 0) {
     sendBtn.textContent = `📮 ${selectedCount} ausgewählte versenden`;
     sendBtn.disabled = false;
+    printBtn.textContent = `🖨️ Markierte drucken (${selectedCount})`;
+    printBtn.disabled = false;
   } else {
     sendBtn.textContent = '📮 Per LetterXpress versenden';
     sendBtn.disabled = true;
+    printBtn.textContent = '🖨️ Markierte drucken (0)';
+    printBtn.disabled = true;
   }
 }
 
@@ -468,33 +473,17 @@ async function toggleRxSelection(checkbox) {
     console.error('Error saving rX selection:', error);
     checkbox.checked = !selected; // Revert on error
   }
-
-  updateRxCount();
 }
 
-function updateRxCount() {
-  const rxCheckboxes = document.querySelectorAll('.rx-checkbox:checked');
-  const printRxBtn = document.getElementById('printRxBtn');
-  const count = rxCheckboxes.length;
-
-  if (count > 0) {
-    printRxBtn.textContent = `🖨️ rX drucken (${count})`;
-    printRxBtn.disabled = false;
-  } else {
-    printRxBtn.textContent = '🖨️ rX drucken (0)';
-    printRxBtn.disabled = true;
-  }
-}
-
-async function printRxSelected() {
-  const rxCheckboxes = document.querySelectorAll('.rx-checkbox:checked');
-  if (rxCheckboxes.length === 0) {
-    alert('Keine rX-markierten Sammelrechnungen ausgewählt.');
+function printSelected() {
+  const selectedCheckboxes = document.querySelectorAll('.invoice-checkbox:checked');
+  if (selectedCheckboxes.length === 0) {
+    alert('Keine Sammelrechnungen ausgewählt.');
     return;
   }
 
   // Get all selected PDF paths
-  const pdfPaths = Array.from(rxCheckboxes).map(cb => cb.dataset.path);
+  const pdfPaths = Array.from(selectedCheckboxes).map(cb => cb.dataset.path);
 
   // Open merged PDF for printing
   const printUrl = `/pdf/merge?paths=${encodeURIComponent(pdfPaths.join(','))}`;
@@ -531,7 +520,6 @@ document.addEventListener('DOMContentLoaded', function() {
   groups.forEach(group => group.classList.add('collapsed'));
   document.getElementById('toggleAllBtn').textContent = 'Alle ausklappen';
   updateSelectionCount();
-  updateRxCount();
 });
 </script>
 

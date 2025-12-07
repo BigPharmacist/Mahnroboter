@@ -13,18 +13,28 @@
     <div class="stat-label">Anzahl Kunden</div>
     <div class="stat-value" id="customer-count">{{ customers|length }}</div>
   </div>
-  <div class="search-container">
-    <input type="text"
-           id="customer-search"
-           class="search-input"
-           placeholder="🔍 Kunden suchen (Name, Adresse, Email)..."
-           onkeyup="filterCustomers()">
-  </div>
-  <div class="filter-toggle">
-    <label class="toggle-label">
-      <input type="checkbox" id="filter-no-salutation" onchange="filterCustomers()">
-      <span>Nur ohne Anrede</span>
-    </label>
+  <div class="search-and-filters">
+    <div class="search-container">
+      <input type="text"
+             id="customer-search"
+             class="search-input"
+             placeholder="🔍 Kunden suchen (Name, Adresse, Email)..."
+             onkeyup="filterCustomers()">
+    </div>
+    <div class="filter-checkboxes">
+      <label class="filter-checkbox-label">
+        <input type="checkbox" id="filter-no-salutation" onchange="filterCustomers()">
+        <span>Nur ohne Anrede</span>
+      </label>
+      <label class="filter-checkbox-label">
+        <input type="checkbox" id="filter-address-incomplete" onchange="filterCustomers()">
+        <span>Adresse unvollständig</span>
+      </label>
+      <label class="filter-checkbox-label">
+        <input type="checkbox" id="filter-name-needs-review" onchange="filterCustomers()">
+        <span>Namen prüfen</span>
+      </label>
+    </div>
   </div>
 </section>
 
@@ -57,7 +67,7 @@
     </thead>
     <tbody>
       {% for customer in customers %}
-      <tr data-customer="{{ customer.customer_name }}" data-street="{{ customer.customer_street }}" data-city="{{ customer.customer_city }}" data-address-incomplete="{{ customer.address_incomplete }}" data-row-id="{{ loop.index }}">
+      <tr data-customer="{{ customer.customer_name }}" data-street="{{ customer.customer_street }}" data-city="{{ customer.customer_city }}" data-address-incomplete="{{ customer.address_incomplete }}" data-name-needs-review="{{ customer.name_needs_review }}" data-row-id="{{ loop.index }}">
         <td class="row-number">{{ loop.index }}</td>
         <td>
           <select class="form-input salutation-input" data-customer="{{ customer.customer_name }}" data-street="{{ customer.customer_street }}" data-city="{{ customer.customer_city }}">
@@ -69,6 +79,9 @@
         </td>
         <td>
           <strong class="customer-name-link" onclick="openCustomerModal({{ loop.index }})">{{ customer.display_name }}</strong>
+          {% if customer.name_needs_review %}
+            <span class="name-review-badge" title="Name scheint ungültig - bitte korrigieren!">!</span>
+          {% endif %}
         </td>
         <td>
           <small class="muted customer-street">{{ customer.customer_street }}</small>
@@ -202,6 +215,13 @@
             <label>
               <input type="checkbox" id="modal-clear-address-incomplete">
               <span>✓ Adresse korrigiert</span>
+            </label>
+          </div>
+
+          <div class="form-group-checkbox" id="modal-clear-name-review-container" style="display: none;">
+            <label>
+              <input type="checkbox" id="modal-clear-name-needs-review">
+              <span>✓ Name korrigiert</span>
             </label>
           </div>
         </div>
@@ -387,6 +407,8 @@ function filterCustomers() {
   const searchInput = document.getElementById('customer-search');
   const filter = searchInput.value.toLowerCase();
   const noSalutationFilter = document.getElementById('filter-no-salutation').checked;
+  const addressIncompleteFilter = document.getElementById('filter-address-incomplete').checked;
+  const nameNeedsReviewFilter = document.getElementById('filter-name-needs-review').checked;
   const table = document.querySelector('.customers-table');
   const rows = table.querySelectorAll('tbody tr');
 
@@ -400,6 +422,8 @@ function filterCustomers() {
     const email = emailInput ? emailInput.value.toLowerCase() : '';
     const salutationSelect = row.querySelector('.salutation-input');
     const hasSalutation = salutationSelect && salutationSelect.value !== '';
+    const isAddressIncomplete = row.dataset.addressIncomplete === 'True' || row.dataset.addressIncomplete === 'true' || row.dataset.addressIncomplete === '1';
+    const isNameNeedsReview = row.dataset.nameNeedsReview === 'True' || row.dataset.nameNeedsReview === 'true' || row.dataset.nameNeedsReview === '1';
 
     // Check search filter
     const matchesSearch = customerName.includes(filter) || street.includes(filter) || city.includes(filter) || email.includes(filter);
@@ -407,7 +431,13 @@ function filterCustomers() {
     // Check no-salutation filter
     const matchesSalutationFilter = !noSalutationFilter || !hasSalutation;
 
-    if (matchesSearch && matchesSalutationFilter) {
+    // Check address-incomplete filter
+    const matchesAddressFilter = !addressIncompleteFilter || isAddressIncomplete;
+
+    // Check name-needs-review filter
+    const matchesNameReviewFilter = !nameNeedsReviewFilter || isNameNeedsReview;
+
+    if (matchesSearch && matchesSalutationFilter && matchesAddressFilter && matchesNameReviewFilter) {
       row.style.display = '';
       visibleCount++;
     } else {
@@ -561,6 +591,7 @@ function openCustomerModal(rowId) {
   const bankDebit = row.querySelector('.bank-debit-checkbox').checked;
   const printOnly = row.querySelector('.print-only-checkbox').checked;
   const addressIncomplete = row.dataset.addressIncomplete === '1' || row.dataset.addressIncomplete === 'True';
+  const nameNeedsReview = row.dataset.nameNeedsReview === '1' || row.dataset.nameNeedsReview === 'True';
 
   // Fill modal form with customer data
   const nameInput = document.getElementById('modal-customer-name');
@@ -591,6 +622,18 @@ function openCustomerModal(rowId) {
     clearCheckbox.checked = false;
   }
 
+  // Show/hide name needs review checkbox
+  const nameReviewContainer = document.getElementById('modal-clear-name-review-container');
+  const nameReviewCheckbox = document.getElementById('modal-clear-name-needs-review');
+
+  if (nameNeedsReview) {
+    nameReviewContainer.style.display = 'block';
+    nameReviewCheckbox.checked = false;
+  } else {
+    nameReviewContainer.style.display = 'none';
+    nameReviewCheckbox.checked = false;
+  }
+
   // Show modal
   modal.style.display = 'flex';
 }
@@ -612,6 +655,7 @@ async function saveCustomer() {
   const bankDebit = document.getElementById('modal-bank-debit').checked;
   const printOnly = document.getElementById('modal-print-only').checked;
   const clearAddressIncomplete = document.getElementById('modal-clear-address-incomplete').checked;
+  const clearNameNeedsReview = document.getElementById('modal-clear-name-needs-review').checked;
 
   const saveButton = document.querySelector('#customerModal .btn-primary');
 
@@ -636,7 +680,8 @@ async function saveCustomer() {
         custom_name: customName,
         custom_street: customStreet,
         custom_city: customCity,
-        clear_address_incomplete: clearAddressIncomplete
+        clear_address_incomplete: clearAddressIncomplete,
+        clear_name_needs_review: clearNameNeedsReview
       })
     });
 
@@ -733,9 +778,41 @@ document.addEventListener('keydown', function(event) {
   flex-shrink: 0;
 }
 
+.search-and-filters {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
 .search-container {
   flex: 1;
   max-width: 600px;
+}
+
+.filter-checkboxes {
+  display: flex;
+  gap: 1.5rem;
+  padding-left: 0.25rem;
+}
+
+.filter-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+  color: #555;
+  cursor: pointer;
+}
+
+.filter-checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.filter-checkbox-label:hover {
+  color: #123c69;
 }
 
 .search-input {
@@ -1064,6 +1141,23 @@ document.addEventListener('keydown', function(event) {
 }
 
 .incomplete-address-badge-modal:hover {
+  background-color: #f57c00;
+}
+
+/* Name needs review badge */
+.name-review-badge {
+  display: inline-block;
+  margin-left: 0.25rem;
+  padding: 0.1rem 0.4rem;
+  background-color: #ff9800;
+  color: white;
+  font-size: 0.7rem;
+  font-weight: bold;
+  border-radius: 50%;
+  cursor: help;
+}
+
+.name-review-badge:hover {
   background-color: #f57c00;
 }
 

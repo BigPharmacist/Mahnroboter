@@ -39,6 +39,7 @@ from flask import (
     request,
     send_from_directory,
     send_file,
+    stream_with_context,
     url_for,
 )
 
@@ -57,10 +58,17 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.enums import TA_JUSTIFY
 from invoice_tracker import (
     find_pdfs,
+    find_pdfs_for_import,
+    get_completed_folders,
+    mark_folder_complete,
+    mark_folder_incomplete,
     init_db,
     process_pdf_file,
     log_invoice_event,
     resolve_pending_import,
+    extract_first_name,
+    determine_genders_batch_via_ai,
+    validate_customer_names_batch_via_ai,
 )
 from letterxpress_client import LetterXpressClient
 
@@ -289,6 +297,7 @@ def send_invoices_batch_email(
     smtp_connection: Optional[smtplib.SMTP] = None,
     smtp_config: Optional[SMTPConfig] = None,
     invoice_list: Optional[List] = None,
+    other_open_invoices: Optional[List] = None,
 ) -> bool:
     """
     Send multiple invoices via email with a nice message from the pharmacy.
@@ -352,16 +361,38 @@ def send_invoices_batch_email(
 
                 invoice_details += f"  - Rechnung Nr. {inv_number} vom {invoice_date_str}: {amount_str}\n"
 
+        # Build list of other open invoices (not attached)
+        other_open_details = ""
+        if other_open_invoices and len(other_open_invoices) > 0:
+            other_open_details = "\nBitte beachten Sie, dass folgende Rechnungen noch offen sind:\n"
+            total_other_open = 0
+            for inv in other_open_invoices:
+                # Format date
+                inv_date_str = inv.invoice_date if inv.invoice_date else "Unbekannt"
+                if inv_date_str and len(inv_date_str) >= 10:
+                    try:
+                        from datetime import datetime
+                        date_obj = datetime.fromisoformat(inv_date_str)
+                        inv_date_str = date_obj.strftime("%d.%m.%Y")
+                    except:
+                        pass
+                # Format amount
+                inv_amount = inv.amount_cents / 100
+                total_other_open += inv_amount
+                amount_str = f"{inv_amount:.2f} EUR"
+                inv_number = inv.invoice_number if inv.invoice_number else "ohne Nummer"
+                other_open_details += f"  - Rechnung Nr. {inv_number} vom {inv_date_str}: {amount_str}\n"
+            other_open_details += f"\nGesamtbetrag offene Rechnungen: {total_other_open:.2f} EUR\n"
+
         # Adjust message based on number of invoices
         if invoice_count == 1:
             invoice_text = "anbei senden wir Ihnen Ihre aktuelle Rechnung."
         else:
-            invoice_text = "anbei senden wir Ihnen Ihre aktuelle Rechnung. Zu Ihrer Information haben wir noch weitere offene Rechnungen beigefügt."
+            invoice_text = "anbei senden wir Ihnen Ihre aktuellen Rechnungen."
 
         email_body = f"""{greeting},
 
-{invoice_text}{invoice_details}
-
+{invoice_text}{invoice_details}{other_open_details}
 Wir bedanken uns herzlich für Ihr Vertrauen und Ihre Treue. ✨
 Sollten Sie Fragen zu Ihrer Rechnung haben, stehen wir Ihnen selbstverständlich gerne zur Verfügung.
 
@@ -1360,8 +1391,7 @@ def create_email_consent_form_pdf(customer_name: str) -> bytes:
 
     intro_text = [
         "Um Ressourcen zu schonen und Ihnen Ihre Rechnungen schneller zukommen zu lassen,",
-        "bieten wir Ihnen gerne die Möglichkeit an, alle Dokumente (Rechnungen,",
-        "Zahlungserinnerungen und Mahnungen) per E-Mail zu erhalten."
+        "bieten wir Ihnen gerne die Möglichkeit an, Ihre Rechnungen per E-Mail zu erhalten."
     ]
 
     for line in intro_text:
@@ -1405,9 +1435,9 @@ def create_email_consent_form_pdf(customer_name: str) -> bytes:
     c.setFont("Helvetica", 9)
 
     datenschutz_text = [
-        "Mit Ihrer Einwilligung verarbeiten wir Ihre E-Mail-Adresse zum Zweck des Versands von",
-        "Rechnungen, Zahlungserinnerungen und Mahnungen. Die Rechtsgrundlage für diese",
-        "Verarbeitung ist Ihre Einwilligung gemäß Art. 6 Abs. 1 lit. a DSGVO.",
+        "Mit Ihrer Einwilligung verarbeiten wir Ihre E-Mail-Adresse zum Zweck des Versands",
+        "von Rechnungen. Die Rechtsgrundlage für diese Verarbeitung ist Ihre Einwilligung",
+        "gemäß Art. 6 Abs. 1 lit. a DSGVO.",
         "",
         "Diese Einwilligung ist freiwillig. Sie können sie jederzeit ohne Angabe von Gründen",
         f"widerrufen, z.B. per E-Mail an {APOTHEKE_EMAIL} oder schriftlich an unsere",
@@ -1426,10 +1456,8 @@ def create_email_consent_form_pdf(customer_name: str) -> bytes:
     c.rect(20*mm, y_pos - 3*mm, 5*mm, 5*mm, stroke=1, fill=0)
 
     c.setFont("Helvetica-Bold", 10)
-    einwilligung_text = f"Ja, ich willige ein, dass die {APOTHEKE_NAME} mir Rechnungen,"
+    einwilligung_text = f"Ja, ich willige ein, dass die {APOTHEKE_NAME} mir Rechnungen per E-Mail zusendet."
     c.drawString(28*mm, y_pos, einwilligung_text)
-    y_pos -= 5*mm
-    c.drawString(28*mm, y_pos, "Zahlungserinnerungen und Mahnungen per E-Mail zusendet.")
 
     y_pos -= 18*mm
 
@@ -1463,30 +1491,26 @@ def create_email_consent_form_pdf(customer_name: str) -> bytes:
 
     y_pos -= 30*mm
 
-    # ===== TRENNLINIE =====
+    # ===== FUSSBEREICH (feste Position am unteren Rand) =====
+    footer_y = 20*mm  # Feste Position vom unteren Rand
+
+    # Trennlinie
     c.setStrokeColor(HexColor("#cccccc"))
     c.setDash(2, 2)
-    c.line(20*mm, y_pos, width - 20*mm, y_pos)
+    c.line(20*mm, footer_y + 10*mm, width - 20*mm, footer_y + 10*mm)
     c.setDash()
     c.setStrokeColor(black)
 
-    y_pos -= 15*mm
-
-    # ===== FUSSBEREICH =====
+    # Fußzeile horizontal ueber die gesamte Breite
     c.setFillColor(primary_color)
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(20*mm, y_pos, APOTHEKE_NAME)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(20*mm, footer_y, APOTHEKE_NAME)
 
-    y_pos -= 5*mm
     c.setFillColor(black)
-    c.setFont("Helvetica", 9)
-    c.drawString(20*mm, y_pos, APOTHEKE_STRASSE)
-    y_pos -= 4*mm
-    c.drawString(20*mm, y_pos, APOTHEKE_PLZ_ORT)
-    y_pos -= 6*mm
-    c.drawString(20*mm, y_pos, f"Telefon: {APOTHEKE_TELEFON}")
-    y_pos -= 4*mm
-    c.drawString(20*mm, y_pos, f"E-Mail: {APOTHEKE_EMAIL}")
+    c.setFont("Helvetica", 8)
+    # Alle Infos in einer Zeile mit Trennzeichen
+    footer_text = f"{APOTHEKE_STRASSE}, {APOTHEKE_PLZ_ORT}  |  Tel: {APOTHEKE_TELEFON}  |  {APOTHEKE_EMAIL}"
+    c.drawString(65*mm, footer_y, footer_text)
 
     c.save()
     buffer.seek(0)
@@ -1510,6 +1534,7 @@ class InvoiceRow:
     customer_street: Optional[str] = None
     customer_city: Optional[str] = None
     address_incomplete: bool = False  # Whether the address was auto-completed
+    name_needs_review: bool = False  # Whether customer name failed AI validation
 
     @property
     def amount_eur(self) -> float:
@@ -1872,11 +1897,15 @@ def create_app(config: Optional[dict] = None) -> Flask:
         view = request.args.get("view", "unbemahnt")  # 'unbemahnt', 'zahlungserinnerung', '1_mahnung', '2_mahnung'
         show_uncollectible = request.args.get("show_uncollectible", "false").lower() == "true"
         hide_never_remind = request.args.get("hide_never_remind", "true").lower() == "true"  # Default: hide customers with never_remind=1
+        only_actionable = request.args.get("only_actionable", "true").lower() == "true"  # Default: show only invoices that need action (have recommendation)
 
         # Fetch all invoices to calculate tab counts
         all_unbemahnt = fetch_invoices_with_reminders(app.config["DATABASE"], filter_reminded=False, hide_never_remind=hide_never_remind)
-        # Show ALL unbemahnt invoices (including those without recommendation)
-        unbemahnt_invoices = all_unbemahnt
+        # Filter for actionable invoices (those with a recommendation) if only_actionable is True
+        if only_actionable:
+            unbemahnt_invoices = [inv for inv in all_unbemahnt if inv.recommended_level is not None]
+        else:
+            unbemahnt_invoices = all_unbemahnt
         all_reminded = fetch_invoices_with_reminders(app.config["DATABASE"], filter_reminded=True, hide_never_remind=hide_never_remind)
         zahlungserinnerung_invoices = [inv for inv in all_reminded if inv.last_reminder_level == 0]
         mahnung_1_invoices = [inv for inv in all_reminded if inv.last_reminder_level == 1]
@@ -1985,7 +2014,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
             view=view,
             stats=stats,
             show_uncollectible=show_uncollectible,
-            hide_never_remind=hide_never_remind
+            hide_never_remind=hide_never_remind,
+            only_actionable=only_actionable
         )
 
     @app.route("/vorlagen")
@@ -2018,33 +2048,58 @@ def create_app(config: Optional[dict] = None) -> Flask:
         never_remind = 1 if data.get("never_remind", False) else 0
         bank_debit = 1 if data.get("bank_debit", False) else 0
         print_only = 1 if data.get("print_only", False) else 0
-        custom_name = data.get("custom_name", "")
-        custom_street = data.get("custom_street", "")
-        custom_city = data.get("custom_city", "")
         clear_address_incomplete = data.get("clear_address_incomplete", False)
+        clear_name_needs_review = data.get("clear_name_needs_review", False)
+
+        # Check if custom_* fields were explicitly sent (from modal)
+        # If not sent, we should preserve existing values
+        has_custom_fields = "custom_name" in data
 
         try:
             with sqlite3.connect(app.config["DATABASE"]) as conn:
                 init_db(conn)
-                # Insert or update customer details
-                conn.execute(
-                    """
-                    INSERT INTO customer_details (customer_name, salutation, email, notes, never_remind, bank_debit, print_only, custom_name, custom_street, custom_city, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
-                    ON CONFLICT(customer_name) DO UPDATE SET
-                        salutation = excluded.salutation,
-                        email = excluded.email,
-                        notes = excluded.notes,
-                        never_remind = excluded.never_remind,
-                        bank_debit = excluded.bank_debit,
-                        print_only = excluded.print_only,
-                        custom_name = excluded.custom_name,
-                        custom_street = excluded.custom_street,
-                        custom_city = excluded.custom_city,
-                        updated_at = datetime('now', 'localtime')
-                    """,
-                    (customer_name, salutation, email, notes, never_remind, bank_debit, print_only, custom_name, custom_street, custom_city)
-                )
+
+                if has_custom_fields:
+                    # Full update including custom fields (from modal)
+                    custom_name = data.get("custom_name", "")
+                    custom_street = data.get("custom_street", "")
+                    custom_city = data.get("custom_city", "")
+
+                    conn.execute(
+                        """
+                        INSERT INTO customer_details (customer_name, salutation, email, notes, never_remind, bank_debit, print_only, custom_name, custom_street, custom_city, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+                        ON CONFLICT(customer_name) DO UPDATE SET
+                            salutation = excluded.salutation,
+                            email = excluded.email,
+                            notes = excluded.notes,
+                            never_remind = excluded.never_remind,
+                            bank_debit = excluded.bank_debit,
+                            print_only = excluded.print_only,
+                            custom_name = excluded.custom_name,
+                            custom_street = excluded.custom_street,
+                            custom_city = excluded.custom_city,
+                            updated_at = datetime('now', 'localtime')
+                        """,
+                        (customer_name, salutation, email, notes, never_remind, bank_debit, print_only, custom_name, custom_street, custom_city)
+                    )
+                else:
+                    # Partial update - preserve existing custom_* fields (from table save)
+                    conn.execute(
+                        """
+                        INSERT INTO customer_details (customer_name, salutation, email, notes, never_remind, bank_debit, print_only, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+                        ON CONFLICT(customer_name) DO UPDATE SET
+                            salutation = excluded.salutation,
+                            email = excluded.email,
+                            notes = excluded.notes,
+                            never_remind = excluded.never_remind,
+                            bank_debit = excluded.bank_debit,
+                            print_only = excluded.print_only,
+                            updated_at = datetime('now', 'localtime')
+                        """,
+                        (customer_name, salutation, email, notes, never_remind, bank_debit, print_only)
+                    )
 
                 # If user wants to clear the address_incomplete flag, update all invoices for this customer
                 if clear_address_incomplete:
@@ -2052,6 +2107,18 @@ def create_app(config: Optional[dict] = None) -> Flask:
                         """
                         UPDATE invoices
                         SET address_incomplete = 0
+                        WHERE customer_name = ?
+                        """,
+                        (customer_name,)
+                    )
+
+                # If user wants to clear the name_needs_review flag, or if a custom_name was set
+                # (automatically clear when user provides a custom name)
+                if clear_name_needs_review or (has_custom_fields and custom_name):
+                    conn.execute(
+                        """
+                        UPDATE invoices
+                        SET name_needs_review = 0
                         WHERE customer_name = ?
                         """,
                         (customer_name,)
@@ -2135,6 +2202,194 @@ def create_app(config: Optional[dict] = None) -> Flask:
             logging.error(f"Error determining salutations: {e}")
             return jsonify({"success": False, "error": str(e)}), 500
 
+    @app.route("/api/batch-salutations-stream", methods=["GET"])
+    def batch_salutations_stream() -> Response:
+        """
+        Stream-based batch salutation determination after import.
+        Uses SSE to report progress while processing names in batches.
+        """
+        def generate():
+            try:
+                with sqlite3.connect(app.config["DATABASE"]) as conn:
+                    conn.row_factory = sqlite3.Row
+                    init_db(conn)
+
+                    # Get all unique customers without salutation
+                    customers_query = """
+                        SELECT DISTINCT i.customer_name
+                        FROM invoices i
+                        LEFT JOIN customer_details cd ON i.customer_name = cd.customer_name
+                        WHERE cd.salutation IS NULL OR cd.salutation = ''
+                        ORDER BY i.customer_name
+                    """
+                    customers = conn.execute(customers_query).fetchall()
+                    total = len(customers)
+
+                    if total == 0:
+                        yield f"data: {json.dumps({'type': 'complete', 'total': 0, 'success': 0, 'message': 'Keine neuen Kunden ohne Anrede'})}\n\n"
+                        return
+
+                    yield f"data: {json.dumps({'type': 'start', 'total': total})}\n\n"
+
+                    # Extract first names and build mapping
+                    name_to_customer = {}
+                    first_names = []
+                    for customer_row in customers:
+                        customer_name = customer_row["customer_name"]
+                        first_name = extract_first_name(customer_name)
+                        if first_name:
+                            # Use first_name as key, but could have duplicates
+                            if first_name not in name_to_customer:
+                                name_to_customer[first_name] = []
+                            name_to_customer[first_name].append(customer_name)
+                            if first_name not in first_names:
+                                first_names.append(first_name)
+
+                    if not first_names:
+                        yield f"data: {json.dumps({'type': 'complete', 'total': total, 'success': 0, 'message': 'Keine Vornamen extrahierbar'})}\n\n"
+                        return
+
+                    # Process in batches of 20 names
+                    batch_size = 20
+                    success_count = 0
+                    processed = 0
+
+                    for i in range(0, len(first_names), batch_size):
+                        batch = first_names[i:i + batch_size]
+
+                        yield f"data: {json.dumps({'type': 'progress', 'processed': processed, 'total': total, 'batch': batch})}\n\n"
+
+                        # Call batch AI
+                        results = determine_genders_batch_via_ai(batch)
+
+                        # Update database for each result
+                        for first_name, salutation in results.items():
+                            if salutation and first_name in name_to_customer:
+                                for customer_name in name_to_customer[first_name]:
+                                    conn.execute(
+                                        """
+                                        INSERT INTO customer_details (customer_name, salutation, updated_at)
+                                        VALUES (?, ?, datetime('now', 'localtime'))
+                                        ON CONFLICT(customer_name) DO UPDATE SET
+                                            salutation = excluded.salutation,
+                                            updated_at = datetime('now', 'localtime')
+                                        """,
+                                        (customer_name, salutation)
+                                    )
+                                    success_count += 1
+                                    processed += 1
+                            else:
+                                if first_name in name_to_customer:
+                                    processed += len(name_to_customer[first_name])
+
+                        conn.commit()
+
+                    yield f"data: {json.dumps({'type': 'complete', 'total': total, 'success': success_count, 'message': f'{success_count} Anreden ermittelt'})}\n\n"
+
+            except Exception as e:
+                logging.error(f"Error in batch salutations stream: {e}")
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+        return Response(stream_with_context(generate()), mimetype="text/event-stream")
+
+    @app.route("/api/batch-validate-names-stream", methods=["GET"])
+    def batch_validate_names_stream() -> Response:
+        """
+        Stream-based batch name validation after import.
+        Uses SSE to report progress while validating customer names in batches.
+        """
+        def generate():
+            try:
+                with sqlite3.connect(app.config["DATABASE"]) as conn:
+                    conn.row_factory = sqlite3.Row
+                    init_db(conn)
+
+                    # Ensure customer_data table exists
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS customer_data (
+                            customer_name TEXT PRIMARY KEY,
+                            salutation TEXT,
+                            email TEXT,
+                            notes TEXT,
+                            never_remind INTEGER DEFAULT 0,
+                            bank_debit INTEGER DEFAULT 0,
+                            print_only INTEGER DEFAULT 0,
+                            custom_name TEXT,
+                            custom_street TEXT,
+                            custom_city TEXT
+                        )
+                    """)
+
+                    # Get all unique customer names that haven't been validated yet
+                    # (name_needs_review is NULL = never checked)
+                    # Exclude customers with custom_name set (they were already manually corrected)
+                    customers_query = """
+                        SELECT DISTINCT i.customer_name
+                        FROM invoices i
+                        LEFT JOIN customer_data cd ON i.customer_name = cd.customer_name
+                        WHERE i.name_needs_review IS NULL
+                          AND (cd.custom_name IS NULL OR cd.custom_name = '')
+                        ORDER BY i.customer_name
+                    """
+                    customers = conn.execute(customers_query).fetchall()
+                    customer_names = [row["customer_name"] for row in customers]
+                    total = len(customer_names)
+
+                    if total == 0:
+                        yield f"data: {json.dumps({'type': 'complete', 'total': 0, 'flagged': 0, 'message': 'Keine Namen zu validieren'})}\n\n"
+                        return
+
+                    yield f"data: {json.dumps({'type': 'start', 'total': total})}\n\n"
+
+                    # Process in batches of 20 names
+                    batch_size = 20
+                    flagged_count = 0
+                    processed = 0
+
+                    for i in range(0, len(customer_names), batch_size):
+                        batch = customer_names[i:i + batch_size]
+
+                        yield f"data: {json.dumps({'type': 'progress', 'processed': processed, 'total': total, 'batch': batch})}\n\n"
+
+                        # Call batch AI validation
+                        results = validate_customer_names_batch_via_ai(batch)
+
+                        # Update database for each result
+                        for name, is_valid in results.items():
+                            if not is_valid:
+                                # Name is invalid - flag it
+                                conn.execute(
+                                    """
+                                    UPDATE invoices
+                                    SET name_needs_review = 1
+                                    WHERE customer_name = ?
+                                    """,
+                                    (name,)
+                                )
+                                flagged_count += 1
+                                logging.info(f"Flagged invalid name: {name}")
+                            else:
+                                # Name is valid - mark as checked (0 = validated OK)
+                                conn.execute(
+                                    """
+                                    UPDATE invoices
+                                    SET name_needs_review = 0
+                                    WHERE customer_name = ?
+                                    """,
+                                    (name,)
+                                )
+                            processed += 1
+
+                        conn.commit()
+
+                    yield f"data: {json.dumps({'type': 'complete', 'total': total, 'flagged': flagged_count, 'message': f'{flagged_count} Namen zur Prüfung markiert'})}\n\n"
+
+            except Exception as e:
+                logging.error(f"Error in batch name validation stream: {e}")
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+        return Response(stream_with_context(generate()), mimetype="text/event-stream")
+
     @app.route("/invoices")
     def index() -> Response:
         query = request.args.get("q", "").strip()
@@ -2146,7 +2401,10 @@ def create_app(config: Optional[dict] = None) -> Flask:
         status_filter = request.args.get("status", "open")  # 'all', 'open', or 'paid'
         email_filter = request.args.get("email", "all")  # 'all', 'with_email', or 'without_email'
         uncollectible_filter = request.args.get("uncollectible", "hide")  # 'hide', 'show', or 'only'
-        invoice_date_filter = request.args.get("invoice_date", "all")  # 'all', 'current_month', or 'previous_month'
+
+        # Invoice date range filter (format: YYYY-MM-DD)
+        invoice_date_from = request.args.get("invoice_date_from", "")
+        invoice_date_to = request.args.get("invoice_date_to", "")
 
         # Custom date range parameters (format: YYYY-MM)
         from_month = request.args.get("from_month", "")
@@ -2169,7 +2427,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
             uncollectible_filter,
             sort_by,
             sort_direction,
-            invoice_date_filter,
+            invoice_date_from=invoice_date_from,
+            invoice_date_to=invoice_date_to,
         )
         total_amount = sum(row.amount_eur for row in invoices)
 
@@ -2205,7 +2464,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 status_filter=status_filter,
                 email_filter=email_filter,
                 uncollectible_filter=uncollectible_filter,
-                invoice_date_filter=invoice_date_filter,
+                invoice_date_from=invoice_date_from,
+                invoice_date_to=invoice_date_to,
                 from_month=from_month,
                 to_month=to_month,
                 latest_snapshot=latest_snapshot,
@@ -2227,7 +2487,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 status_filter=status_filter,
                 email_filter=email_filter,
                 uncollectible_filter=uncollectible_filter,
-                invoice_date_filter=invoice_date_filter,
+                invoice_date_from=invoice_date_from,
+                invoice_date_to=invoice_date_to,
                 from_month=from_month,
                 to_month=to_month,
                 latest_snapshot=latest_snapshot,
@@ -2380,7 +2641,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
         status_filter = request.args.get("status", "open")
         email_filter = request.args.get("email", "all")
         uncollectible_filter = request.args.get("uncollectible", "hide")
-        invoice_date_filter = request.args.get("invoice_date", "all")
+        invoice_date_from = request.args.get("invoice_date_from", "")
+        invoice_date_to = request.args.get("invoice_date_to", "")
         from_month = request.args.get("from_month", "")
         to_month = request.args.get("to_month", "")
         sort_by, sort_direction = normalize_sort_params(
@@ -2399,7 +2661,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
             uncollectible_filter,
             sort_by,
             sort_direction,
-            invoice_date_filter,
+            invoice_date_from=invoice_date_from,
+            invoice_date_to=invoice_date_to,
         )
         return jsonify(
             {
@@ -2439,13 +2702,16 @@ def create_app(config: Optional[dict] = None) -> Flask:
         if not root.exists():
             return jsonify({"error": f"Verzeichnis {root} nicht gefunden"}), 404
 
-        pdf_files = list(find_pdfs(root))
         new_count = 0
         errors = []
-
         payments_detected = 0
+        pdf_count = 0
+
         with sqlite3.connect(db_path) as conn:
             init_db(conn)
+            # Use find_pdfs_for_import to skip already completed folders
+            pdf_files = list(find_pdfs_for_import(root, conn))
+            pdf_count = len(pdf_files)
             for pdf_path in pdf_files:
                 try:
                     if process_pdf_file(conn, pdf_path, root):
@@ -2474,7 +2740,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
         return jsonify({
             "success": True,
             "new_invoices": new_count,
-            "total_scanned": len(pdf_files),
+            "total_scanned": pdf_count,
             "payments_detected": payments_detected,
             "errors": errors
         })
@@ -2483,6 +2749,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
     def scan_new_invoices_stream() -> Response:
         """Scan the invoice directory for new PDFs with real-time progress using Server-Sent Events."""
         import json
+        import re
         from flask import stream_with_context
 
         def generate():
@@ -2494,25 +2761,37 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     yield f"data: {json.dumps({'type': 'error', 'message': f'Verzeichnis {root} nicht gefunden'})}\n\n"
                     return
 
-                pdf_files = list(find_pdfs(root))
-                total_pdfs = len(pdf_files)
-
-                if total_pdfs == 0:
-                    yield f"data: {json.dumps({'type': 'complete', 'success': 0, 'failed': 0, 'total': 0})}\n\n"
-                    return
-
-                # Send summary
-                yield f"data: {json.dumps({'type': 'summary', 'total': total_pdfs})}\n\n"
-
-                new_count = 0
-                skipped_count = 0
-                error_count = 0
-                errors = []
-
                 with sqlite3.connect(db_path) as conn:
                     init_db(conn)
+
+                    # Use optimized function that skips already completed folders
+                    completed_folders = get_completed_folders(conn)
+                    if completed_folders:
+                        yield f"data: {json.dumps({'type': 'info', 'message': f'{len(completed_folders)} bereits importierte Ordner werden übersprungen: {', '.join(sorted(completed_folders))}'})}\n\n"
+
+                    pdf_files = list(find_pdfs_for_import(root, conn))
+                    total_pdfs = len(pdf_files)
+
+                    if total_pdfs == 0:
+                        yield f"data: {json.dumps({'type': 'complete', 'success': 0, 'failed': 0, 'total': 0, 'skipped_folders': list(completed_folders)})}\n\n"
+                        return
+
+                    # Send summary
+                    yield f"data: {json.dumps({'type': 'summary', 'total': total_pdfs})}\n\n"
+
+                    new_count = 0
+                    skipped_count = 0
+                    error_count = 0
+                    errors = []
+                    processed_folders = set()  # Track which folders we processed
+
                     for idx, pdf_path in enumerate(pdf_files, 1):
                         try:
+                            # Track folder
+                            relative_path = pdf_path.relative_to(root)
+                            if len(relative_path.parts) >= 1:
+                                processed_folders.add(relative_path.parts[0])
+
                             # Yield progress
                             progress = int((idx / total_pdfs) * 100)
                             yield f"data: {json.dumps({'type': 'progress', 'progress': progress, 'processed': idx, 'total': total_pdfs, 'file': pdf_path.name})}\n\n"
@@ -2547,8 +2826,19 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     except Exception as e:
                         logging.error(f"Fehler bei Zahlungserkennung: {e}")
 
+                    # Mark all processed folders as complete (regardless of pending imports)
+                    # This ensures folders are not re-scanned on subsequent imports
+                    marked_complete = []
+                    for folder_name in processed_folders:
+                        if mark_folder_complete(conn, folder_name):
+                            marked_complete.append(folder_name)
+                            logging.info(f"Ordner '{folder_name}' als komplett importiert markiert")
+
+                    if marked_complete:
+                        yield f"data: {json.dumps({'type': 'info', 'message': f'{len(marked_complete)} Ordner als vollständig importiert markiert: {', '.join(marked_complete)}'})}\n\n"
+
                 # Send completion message
-                yield f"data: {json.dumps({'type': 'complete', 'success': new_count, 'skipped': skipped_count, 'failed': error_count, 'total': total_pdfs, 'errors': errors})}\n\n"
+                yield f"data: {json.dumps({'type': 'complete', 'success': new_count, 'skipped': skipped_count, 'failed': error_count, 'total': total_pdfs, 'errors': errors, 'processed_folders': list(processed_folders)})}\n\n"
 
             except Exception as e:
                 logging.error(f"Error in scan stream: {e}")
@@ -2649,6 +2939,119 @@ def create_app(config: Optional[dict] = None) -> Flask:
             logging.error(f"Fehler beim Auflösen des Imports: {e}")
             return jsonify({"error": str(e)}), 500
 
+    @app.route("/api/import-folders", methods=["GET"])
+    def get_import_folders() -> Response:
+        """Get list of all import folders with their status."""
+        db_path = Path(app.config["DATABASE"])
+        root = Path(app.config["INVOICE_ROOT"])
+
+        with sqlite3.connect(db_path) as conn:
+            init_db(conn)
+
+            # Get folders from database
+            cursor = conn.execute(
+                """
+                SELECT folder_name, snapshot_date, import_complete, scanned_at,
+                       (SELECT COUNT(*) FROM invoice_snapshots is2
+                        JOIN snapshots s2 ON is2.snapshot_id = s2.id
+                        WHERE s2.folder_name = snapshots.folder_name) as invoice_count
+                FROM snapshots
+                ORDER BY snapshot_date DESC
+                """
+            )
+
+            folders = []
+            for row in cursor.fetchall():
+                folder_name, snapshot_date, import_complete, scanned_at, invoice_count = row
+                folder_path = root / folder_name
+                pdf_count = len(list(folder_path.glob("*.pdf"))) if folder_path.exists() else 0
+
+                folders.append({
+                    "folder_name": folder_name,
+                    "snapshot_date": snapshot_date,
+                    "import_complete": bool(import_complete),
+                    "scanned_at": scanned_at,
+                    "invoice_count": invoice_count,
+                    "pdf_count_on_disk": pdf_count,
+                    "exists_on_disk": folder_path.exists()
+                })
+
+            # Also find folders on disk that aren't in the database yet
+            if root.exists():
+                import re
+                for folder in root.iterdir():
+                    if folder.is_dir() and re.match(r'^\d{4}-\d{2}', folder.name):
+                        if not any(f["folder_name"] == folder.name for f in folders):
+                            pdf_count = len(list(folder.glob("*.pdf")))
+                            folders.append({
+                                "folder_name": folder.name,
+                                "snapshot_date": None,
+                                "import_complete": False,
+                                "scanned_at": None,
+                                "invoice_count": 0,
+                                "pdf_count_on_disk": pdf_count,
+                                "exists_on_disk": True,
+                                "not_yet_imported": True
+                            })
+
+            # Sort by folder name descending
+            folders.sort(key=lambda x: x["folder_name"], reverse=True)
+
+        return jsonify({
+            "success": True,
+            "folders": folders
+        })
+
+    @app.route("/api/import-folders/mark-complete", methods=["POST"])
+    def mark_folder_complete_api() -> Response:
+        """Mark a folder as completely imported."""
+        data = request.get_json()
+        folder_name = data.get("folder_name")
+
+        if not folder_name:
+            return jsonify({"error": "folder_name ist erforderlich"}), 400
+
+        db_path = Path(app.config["DATABASE"])
+
+        with sqlite3.connect(db_path) as conn:
+            init_db(conn)
+            success = mark_folder_complete(conn, folder_name)
+
+            if success:
+                return jsonify({
+                    "success": True,
+                    "message": f"Ordner '{folder_name}' als vollständig importiert markiert"
+                })
+            else:
+                return jsonify({
+                    "error": f"Ordner '{folder_name}' nicht gefunden"
+                }), 404
+
+    @app.route("/api/import-folders/mark-incomplete", methods=["POST"])
+    def mark_folder_incomplete_api() -> Response:
+        """Mark a folder as incomplete (to allow re-scanning)."""
+        data = request.get_json()
+        folder_name = data.get("folder_name")
+
+        if not folder_name:
+            return jsonify({"error": "folder_name ist erforderlich"}), 400
+
+        db_path = Path(app.config["DATABASE"])
+
+        with sqlite3.connect(db_path) as conn:
+            init_db(conn)
+            success = mark_folder_incomplete(conn, folder_name)
+
+            if success:
+                return jsonify({
+                    "success": True,
+                    "message": f"Ordner '{folder_name}' für erneuten Scan freigegeben"
+                })
+            else:
+                return jsonify({
+                    "error": f"Ordner '{folder_name}' nicht gefunden"
+                }), 404
+
     @app.route("/api/print-invoices")
     def print_invoices() -> Response:
         """Combine all filtered invoice PDFs into a single PDF for printing."""
@@ -2658,11 +3061,12 @@ def create_app(config: Optional[dict] = None) -> Flask:
         status_filter = request.args.get("status", "open")
         email_filter = request.args.get("email", "all")
         uncollectible_filter = request.args.get("uncollectible", "hide")
-        invoice_date_filter = request.args.get("invoice_date", "all")
+        invoice_date_from = request.args.get("invoice_date_from", "")
+        invoice_date_to = request.args.get("invoice_date_to", "")
         from_month = request.args.get("from_month", "")
         to_month = request.args.get("to_month", "")
 
-        invoices = fetch_invoices(app.config["DATABASE"], query, limit, time_filter, status_filter, from_month, to_month, email_filter, uncollectible_filter, invoice_date_filter=invoice_date_filter)
+        invoices = fetch_invoices(app.config["DATABASE"], query, limit, time_filter, status_filter, from_month, to_month, email_filter, uncollectible_filter, invoice_date_from=invoice_date_from, invoice_date_to=invoice_date_to)
 
         if not invoices:
             return jsonify({"error": "Keine Rechnungen zum Drucken gefunden"}), 404
@@ -2719,13 +3123,14 @@ def create_app(config: Optional[dict] = None) -> Flask:
         status_filter = request.args.get("status", "open")
         email_filter = request.args.get("email", "all")
         uncollectible_filter = request.args.get("uncollectible", "hide")
-        invoice_date_filter = request.args.get("invoice_date", "all")
+        invoice_date_from = request.args.get("invoice_date_from", "")
+        invoice_date_to = request.args.get("invoice_date_to", "")
         from_month = request.args.get("from_month", "")
         to_month = request.args.get("to_month", "")
 
         def generate():
             try:
-                invoices = fetch_invoices(app.config["DATABASE"], query, limit, time_filter, status_filter, from_month, to_month, email_filter, uncollectible_filter, invoice_date_filter=invoice_date_filter)
+                invoices = fetch_invoices(app.config["DATABASE"], query, limit, time_filter, status_filter, from_month, to_month, email_filter, uncollectible_filter, invoice_date_from=invoice_date_from, invoice_date_to=invoice_date_to)
 
                 if not invoices:
                     yield f"data: {json.dumps({'type': 'error', 'message': 'Keine Rechnungen zum Versenden gefunden'})}\n\n"
@@ -2834,6 +3239,34 @@ def create_app(config: Optional[dict] = None) -> Flask:
                                 yield f"data: {json.dumps({'type': 'progress', 'progress': progress, 'processed': processed_groups, 'total': total_groups})}\n\n"
                                 continue
 
+                            # Get other open invoices for this customer (not in current filter)
+                            current_invoice_ids = {inv.id for inv in invoice_list}
+                            other_open_cursor = conn.execute(
+                                """
+                                SELECT i.id, i.invoice_number, i.invoice_date, i.amount_cents
+                                FROM invoices i
+                                JOIN invoice_snapshots isnap ON i.id = isnap.invoice_id
+                                JOIN snapshots s ON isnap.snapshot_id = s.id
+                                WHERE i.customer_name = ?
+                                  AND s.snapshot_date = (SELECT MAX(snapshot_date) FROM snapshots)
+                                  AND i.uncollectible = 0
+                                ORDER BY i.invoice_date ASC
+                                """,
+                                (customer_name,)
+                            )
+                            # Create simple objects for other open invoices
+                            other_open_invoices = []
+                            for row in other_open_cursor.fetchall():
+                                if row["id"] not in current_invoice_ids:
+                                    class SimpleInvoice:
+                                        pass
+                                    inv = SimpleInvoice()
+                                    inv.id = row["id"]
+                                    inv.invoice_number = row["invoice_number"]
+                                    inv.invoice_date = row["invoice_date"]
+                                    inv.amount_cents = row["amount_cents"]
+                                    other_open_invoices.append(inv)
+
                             # Send info message
                             yield f"data: {json.dumps({'type': 'info', 'customer': customer_name, 'email': customer_email, 'count': len(pdf_paths)})}\n\n"
 
@@ -2851,6 +3284,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                                 smtp_connection=ensure_smtp_connection(),
                                 smtp_config=smtp_config,
                                 invoice_list=invoice_list,  # Pass the invoice list for details
+                                other_open_invoices=other_open_invoices if other_open_invoices else None,
                             )
 
                             if not send_success:
@@ -2879,6 +3313,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                                     smtp_connection=connection_for_retry,
                                     smtp_config=smtp_config,
                                     invoice_list=invoice_list,  # Pass the invoice list for details
+                                    other_open_invoices=other_open_invoices if other_open_invoices else None,
                                 )
 
                             if send_success:
@@ -3229,9 +3664,15 @@ def create_app(config: Optional[dict] = None) -> Flask:
     def generate_collective_invoices() -> Response:
         """Generate collective invoices (cover letter + latest invoice) for each customer."""
         try:
-            # Get current month for folder name
-            current_month = datetime.now().strftime("%Y-%m")
-            output_folder = BASE_DIR / "Sammelrechnungen" / current_month
+            # Get folder name from request or use current month as default
+            folder_name = request.args.get("folder_name", "").strip()
+            if not folder_name:
+                folder_name = datetime.now().strftime("%Y-%m")
+
+            # Sanitize folder name to prevent path traversal
+            folder_name = folder_name.replace("/", "-").replace("\\", "-").replace("..", "-")
+
+            output_folder = BASE_DIR / "Sammelrechnungen" / folder_name
             output_folder.mkdir(parents=True, exist_ok=True)
 
             # Get filters from request (for selecting which customers to process)
@@ -3243,7 +3684,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
             to_month = request.args.get("to_month", "")
             email_filter = request.args.get("email", "all")
             uncollectible_filter = request.args.get("uncollectible", "hide")
-            invoice_date_filter = request.args.get("invoice_date", "all")
+            invoice_date_from = request.args.get("invoice_date_from", "")
+            invoice_date_to = request.args.get("invoice_date_to", "")
             include_sepa = request.args.get("include_sepa", "false").lower() == "true"
             include_email_consent = request.args.get("include_email_consent", "false").lower() == "true"
 
@@ -3258,7 +3700,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 to_month,
                 email_filter,
                 uncollectible_filter,
-                invoice_date_filter=invoice_date_filter
+                invoice_date_from=invoice_date_from,
+                invoice_date_to=invoice_date_to
             )
 
             if not filtered_invoices:
@@ -3403,7 +3846,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     ).strip()
                     # Add timestamp to prevent overwriting files when creating multiple collective invoices for the same customer in the same month
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = f"Sammelrechnung_{current_month}_{safe_customer_name}_{timestamp}.pdf"
+                    filename = f"Sammelrechnung_{folder_name}_{safe_customer_name}_{timestamp}.pdf"
                     output_path = output_folder / filename
 
                     with open(output_path, 'wb') as f:
@@ -3418,7 +3861,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                                 (invoice_id, collective_invoice_filename, collective_invoice_month)
                                 VALUES (?, ?, ?)
                                 """,
-                                (inv.id, filename, current_month)
+                                (inv.id, filename, folder_name)
                             )
                             # Log collective invoice creation event
                             log_invoice_event(
@@ -3427,7 +3870,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                                 "COLLECTIVE_INVOICE_CREATED",
                                 {
                                     "filename": filename,
-                                    "month": current_month,
+                                    "month": folder_name,
                                     "invoice_count": len(current_month_invoices)
                                 }
                             )
@@ -4299,7 +4742,8 @@ def fetch_invoices(
     uncollectible_filter: str = "hide",
     sort_by: str = "date",
     sort_direction: str = "desc",
-    invoice_date_filter: str = "all",
+    invoice_date_from: str = "",
+    invoice_date_to: str = "",
 ) -> List[InvoiceRow]:
     """
     Fetch invoices with their payment status based on snapshot tracking.
@@ -4319,11 +4763,9 @@ def fetch_invoices(
     - 'show': Show uncollectible invoices
     - 'only': Show only uncollectible invoices
 
-    Invoice date filter (Rechnungsdatum):
-    - 'all': All invoice dates
-    - 'current_month': Invoices from current calendar month
-    - 'previous_month': Invoices from previous calendar month
-    - 'current_month,previous_month': Multiple selections (comma-separated)
+    Invoice date range filter (Rechnungsdatum):
+    - invoice_date_from: Start date in YYYY-MM-DD format
+    - invoice_date_to: End date in YYYY-MM-DD format
 
     Custom date range:
     - from_month: Start month in YYYY-MM format
@@ -4377,6 +4819,7 @@ def fetch_invoices(
                     i.amount_cents,
                     i.uncollectible,
                     i.address_incomplete,
+                    i.name_needs_review as name_needs_review_raw,
                     MAX(s.snapshot_date) as last_seen_snapshot,
                     MIN(s.snapshot_date) as first_seen_snapshot,
                     CASE
@@ -4414,7 +4857,9 @@ def fetch_invoices(
                 END as in_collective_invoice,
                 cd.custom_name,
                 cd.custom_street,
-                cd.custom_city
+                cd.custom_city,
+                -- If custom_name is set, user already corrected the name, so ignore name_needs_review
+                CASE WHEN cd.custom_name IS NOT NULL AND cd.custom_name != '' THEN 0 ELSE ist.name_needs_review_raw END as name_needs_review
             FROM invoice_status ist
             LEFT JOIN snapshot_files sf ON ist.id = sf.invoice_id AND sf.rn = 1
             LEFT JOIN customer_details cd ON ist.customer_name = cd.customer_name
@@ -4462,22 +4907,13 @@ def fetch_invoices(
         elif email_filter == "without_email":
             sql += " AND (cd.email IS NULL OR cd.email = '')"
 
-        # Apply invoice date filter (Rechnungsdatum)
-        # Support multiple selections (comma-separated)
-        if invoice_date_filter and invoice_date_filter != "all":
-            selected_filters = [f.strip() for f in invoice_date_filter.split(',')]
-            date_conditions = []
-
-            if "current_month" in selected_filters:
-                date_conditions.append("strftime('%Y-%m', ist.invoice_date) = strftime('%Y-%m', 'now')")
-            if "previous_month" in selected_filters:
-                date_conditions.append("strftime('%Y-%m', ist.invoice_date) = strftime('%Y-%m', 'now', '-1 month')")
-
-            if date_conditions:
-                if len(date_conditions) == 1:
-                    sql += f" AND {date_conditions[0]}"
-                else:
-                    sql += f" AND ({' OR '.join(date_conditions)})"
+        # Apply invoice date range filter (Rechnungsdatum)
+        if invoice_date_from:
+            sql += " AND ist.invoice_date >= ?"
+            params.append(invoice_date_from)
+        if invoice_date_to:
+            sql += " AND ist.invoice_date <= ?"
+            params.append(invoice_date_to)
 
         sort_key, sort_dir = normalize_sort_params(sort_by, sort_direction)
         order_expression = SORT_COLUMN_MAP[sort_key]
@@ -4525,6 +4961,7 @@ def row_from_sql(row: sqlite3.Row) -> InvoiceRow:
         customer_street=customer_street,
         customer_city=customer_city,
         address_incomplete=bool(row["address_incomplete"]) if "address_incomplete" in row.keys() else False,
+        name_needs_review=bool(row["name_needs_review"]) if "name_needs_review" in row.keys() else False,
     )
 
 
@@ -4616,6 +5053,8 @@ def fetch_all_customers(database_path: str) -> List[Dict]:
                 i.customer_street,
                 i.customer_city,
                 MAX(i.address_incomplete) as address_incomplete,
+                -- If custom_name is set, user already corrected the name, so ignore name_needs_review
+                CASE WHEN cd.custom_name IS NOT NULL AND cd.custom_name != '' THEN 0 ELSE MAX(i.name_needs_review) END as name_needs_review,
                 cd.salutation,
                 cd.email,
                 cd.notes,
@@ -4658,6 +5097,7 @@ def fetch_all_customers(database_path: str) -> List[Dict]:
             "bank_debit": row["bank_debit"] or 0,
             "print_only": row["print_only"] or 0,
             "address_incomplete": row["address_incomplete"] or 0,
+            "name_needs_review": row["name_needs_review"] or 0,
             "invoice_count": row["invoice_count"],
             "total_amount_eur": row["total_amount_cents"] / 100.0 if row["total_amount_cents"] else 0.0,
         })

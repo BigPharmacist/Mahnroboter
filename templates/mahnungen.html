@@ -10,22 +10,22 @@
 
 <section class="tabs">
   <div class="tab-buttons">
-    <a href="{{ url_for('mahnungen', view='unbemahnt') }}"
+    <a href="{{ url_for('mahnungen', view='unbemahnt', hide_never_remind=hide_never_remind, only_actionable=only_actionable) }}"
        class="tab-btn {% if view == 'unbemahnt' %}active{% endif %}">
       <span class="tab-btn-text">Unbemahnt</span>
       <span class="tab-badge">{{ stats.tab_counts.unbemahnt }}</span>
     </a>
-    <a href="{{ url_for('mahnungen', view='zahlungserinnerung') }}"
+    <a href="{{ url_for('mahnungen', view='zahlungserinnerung', hide_never_remind=hide_never_remind) }}"
        class="tab-btn {% if view == 'zahlungserinnerung' %}active{% endif %}">
       <span class="tab-btn-text">Zahlungserinnerung</span>
       <span class="tab-badge">{{ stats.tab_counts.zahlungserinnerung }}</span>
     </a>
-    <a href="{{ url_for('mahnungen', view='1_mahnung') }}"
+    <a href="{{ url_for('mahnungen', view='1_mahnung', hide_never_remind=hide_never_remind) }}"
        class="tab-btn {% if view == '1_mahnung' %}active{% endif %}">
       <span class="tab-btn-text">1. Mahnung</span>
       <span class="tab-badge">{{ stats.tab_counts['1_mahnung'] }}</span>
     </a>
-    <a href="{{ url_for('mahnungen', view='2_mahnung') }}"
+    <a href="{{ url_for('mahnungen', view='2_mahnung', hide_never_remind=hide_never_remind) }}"
        class="tab-btn {% if view == '2_mahnung' %}active{% endif %}">
       <span class="tab-btn-text">2. Mahnung</span>
       <span class="tab-badge">{{ stats.tab_counts['2_mahnung'] }}</span>
@@ -53,13 +53,25 @@
 <!-- Filter buttons -->
 <section class="filter-controls">
   <div class="collapse-controls">
+    <!-- Actionable filter button - only for unbemahnt view -->
+    {% if view == 'unbemahnt' %}
+    <a href="{{ url_for('mahnungen', view=view, hide_never_remind=hide_never_remind, only_actionable='false' if only_actionable else 'true') }}"
+       class="btn btn-secondary btn-sm">
+      {% if only_actionable %}
+        Alle Rechnungen anzeigen
+      {% else %}
+        Nur zu mahnende anzeigen
+      {% endif %}
+    </a>
+    {% endif %}
+
     <!-- Never remind filter button - always shown -->
-    <a href="{{ url_for('mahnungen', view=view, show_uncollectible=show_uncollectible, hide_never_remind='false' if hide_never_remind else 'true') }}"
+    <a href="{{ url_for('mahnungen', view=view, show_uncollectible=show_uncollectible, hide_never_remind='false' if hide_never_remind else 'true', only_actionable=only_actionable) }}"
        class="btn btn-secondary btn-sm">
       {% if hide_never_remind %}
-        👁 "Nie mahnen"-Kunden anzeigen
+        "Nie mahnen"-Kunden anzeigen
       {% else %}
-        ✓ "Nie mahnen"-Kunden ausblenden
+        "Nie mahnen"-Kunden ausblenden
       {% endif %}
     </a>
 
@@ -68,9 +80,9 @@
     <a href="{{ url_for('mahnungen', view='2_mahnung', show_uncollectible='true' if not show_uncollectible else 'false', hide_never_remind=hide_never_remind) }}"
        class="btn btn-secondary btn-sm">
       {% if show_uncollectible %}
-        ✓ Uneinbringbare Re. ausblenden
+        Uneinbringbare Re. ausblenden
       {% else %}
-        👁 Uneinbringbare Re. anzeigen
+        Uneinbringbare Re. anzeigen
       {% endif %}
     </a>
     {% endif %}

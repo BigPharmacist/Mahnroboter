@@ -60,6 +60,7 @@ class InvoiceRecord:
     customer_street: Optional[str] = None
     customer_city: Optional[str] = None
     address_incomplete: bool = False  # True if address was auto-completed
+    name_needs_review: bool = False  # True if customer name failed AI validation
 
 
 def parse_args() -> argparse.Namespace:
@@ -125,10 +126,17 @@ def init_db(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             snapshot_date TEXT NOT NULL UNIQUE,
             folder_name TEXT NOT NULL,
-            scanned_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+            scanned_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+            import_complete INTEGER DEFAULT 0
         )
         """
     )
+
+    # Add import_complete column if it doesn't exist (migration for existing databases)
+    try:
+        conn.execute("ALTER TABLE snapshots ADD COLUMN import_complete INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
 
     # Create invoices table
     conn.execute(
@@ -144,6 +152,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             amount_cents INTEGER NOT NULL,
             currency TEXT NOT NULL DEFAULT 'EUR',
             address_incomplete INTEGER DEFAULT 0,
+            name_needs_review INTEGER DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
             UNIQUE(invoice_number, customer_name, amount_cents)
         )
@@ -293,6 +302,13 @@ def init_db(conn: sqlite3.Connection) -> None:
         WHERE customer_street IS NULL
     """)
 
+    # Add name_needs_review column to invoices if it doesn't exist (for existing databases)
+    try:
+        conn.execute("ALTER TABLE invoices ADD COLUMN name_needs_review INTEGER DEFAULT 0")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
     # Create sammelrechnungen_letterxpress table for tracking Letterxpress submissions
     conn.execute(
         """
@@ -427,6 +443,68 @@ def extract_snapshot_from_path(pdf_path: Path, root: Path) -> Optional[tuple[str
 
 def find_pdfs(root: Path) -> Iterable[Path]:
     return sorted(path for path in root.rglob("*.pdf") if path.is_file())
+
+
+def get_completed_folders(conn: sqlite3.Connection) -> set[str]:
+    """Get set of folder names that have been marked as import_complete."""
+    cursor = conn.execute(
+        "SELECT folder_name FROM snapshots WHERE import_complete = 1"
+    )
+    return {row[0] for row in cursor.fetchall()}
+
+
+def find_pdfs_for_import(root: Path, conn: sqlite3.Connection) -> Iterable[Path]:
+    """
+    Find PDFs that need to be imported, skipping folders already marked as complete.
+    This is much faster than find_pdfs() for subsequent scans.
+    """
+    completed_folders = get_completed_folders(conn)
+
+    if completed_folders:
+        logging.info(
+            "Überspringe %d bereits importierte Ordner: %s",
+            len(completed_folders),
+            ", ".join(sorted(completed_folders))
+        )
+
+    for path in sorted(root.rglob("*.pdf")):
+        if not path.is_file():
+            continue
+
+        # Get the folder name (first part of relative path)
+        try:
+            relative_path = path.relative_to(root)
+            if len(relative_path.parts) >= 1:
+                folder_name = relative_path.parts[0]
+                if folder_name in completed_folders:
+                    continue  # Skip files in completed folders
+        except ValueError:
+            pass
+
+        yield path
+
+
+def mark_folder_complete(conn: sqlite3.Connection, folder_name: str) -> bool:
+    """Mark a folder as completely imported."""
+    cursor = conn.execute(
+        "UPDATE snapshots SET import_complete = 1 WHERE folder_name = ?",
+        (folder_name,)
+    )
+    conn.commit()
+    if cursor.rowcount > 0:
+        logging.info("Ordner '%s' als vollständig importiert markiert", folder_name)
+        return True
+    return False
+
+
+def mark_folder_incomplete(conn: sqlite3.Connection, folder_name: str) -> bool:
+    """Mark a folder as incomplete (for re-scanning)."""
+    cursor = conn.execute(
+        "UPDATE snapshots SET import_complete = 0 WHERE folder_name = ?",
+        (folder_name,)
+    )
+    conn.commit()
+    return cursor.rowcount > 0
 
 
 def extract_text(pdf_path: Path) -> str:
@@ -684,9 +762,10 @@ def get_or_create_invoice(conn: sqlite3.Connection, record: InvoiceRecord) -> in
             amount_cents,
             customer_street,
             customer_city,
-            address_incomplete
+            address_incomplete,
+            name_needs_review
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record.invoice_number,
@@ -697,6 +776,7 @@ def get_or_create_invoice(conn: sqlite3.Connection, record: InvoiceRecord) -> in
             record.customer_street,
             record.customer_city,
             1 if record.address_incomplete else 0,
+            1 if record.name_needs_review else 0,
         )
     )
     return cursor.lastrowid
@@ -721,6 +801,25 @@ def link_invoice_to_snapshot(
     except sqlite3.IntegrityError:
         # Link already exists
         return False
+
+
+# Known names that AI might not recognize correctly
+# Maps lowercase first name -> "Herr" or "Frau"
+KNOWN_NAMES_GENDER = {
+    "hedemi": "Frau",
+    "martun": "Herr",
+    "ruqiyo": "Frau",
+}
+
+
+def lookup_known_gender(first_name: str) -> Optional[str]:
+    """
+    Check if a first name is in the known names lookup table.
+    Returns "Herr" or "Frau" if found, None otherwise.
+    """
+    if not first_name:
+        return None
+    return KNOWN_NAMES_GENDER.get(first_name.lower().strip())
 
 
 def extract_first_name(customer_name: str) -> Optional[str]:
@@ -752,7 +851,13 @@ def extract_first_name(customer_name: str) -> Optional[str]:
 def determine_gender_via_ai(first_name: str) -> Optional[str]:
     """
     Use Nebius AI (Meta Llama 70B) to determine the gender based on first name.
+    First checks the known names lookup table.
     """
+    # First check known names lookup
+    known = lookup_known_gender(first_name)
+    if known:
+        return known
+
     try:
         api_key = os.getenv('NEBIUS_API_KEY')
         if not api_key:
@@ -796,6 +901,106 @@ Antwort:"""
         return None
 
 
+def determine_genders_batch_via_ai(first_names: list[str]) -> dict[str, Optional[str]]:
+    """
+    Use Nebius AI to determine genders for multiple first names in a single API call.
+    First checks the known names lookup table for each name.
+    Returns a dict mapping first_name -> "Herr"/"Frau"/None
+    """
+    if not first_names:
+        return {}
+
+    # First check known names lookup for all names
+    result = {}
+    names_to_query = []
+    for name in first_names:
+        known = lookup_known_gender(name)
+        if known:
+            result[name] = known
+        else:
+            names_to_query.append(name)
+
+    # If all names were known, return early
+    if not names_to_query:
+        return result
+
+    try:
+        api_key = os.getenv('NEBIUS_API_KEY')
+        if not api_key:
+            for name in names_to_query:
+                result[name] = None
+            return result
+
+        url = "https://api.studio.nebius.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        names_list = ", ".join(f'"{name}"' for name in names_to_query)
+        prompt = f"""Bestimme das Geschlecht für folgende Vornamen: {names_list}
+
+Antworte im JSON-Format als Array, für jeden Namen in der gleichen Reihenfolge:
+- "m" für männlich
+- "w" für weiblich
+- "u" für unbekannt
+
+Beispiel für ["Hans", "Maria", "Kim"]:
+["m", "w", "u"]
+
+Antwort (nur das JSON-Array, keine Erklärung):"""
+
+        payload = {
+            "model": "meta-llama/Llama-3.3-70B-Instruct",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.1,
+            "max_tokens": len(names_to_query) * 5 + 20
+        }
+
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+
+        data = response.json()
+        ai_response = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+
+        # Parse JSON response
+        try:
+            # Find JSON array in response
+            start = ai_response.find('[')
+            end = ai_response.rfind(']') + 1
+            if start >= 0 and end > start:
+                genders = json.loads(ai_response[start:end])
+            else:
+                for name in names_to_query:
+                    result[name] = None
+                return result
+        except json.JSONDecodeError:
+            for name in names_to_query:
+                result[name] = None
+            return result
+
+        # Map AI results to names_to_query
+        for i, name in enumerate(names_to_query):
+            if i < len(genders):
+                g = genders[i].lower() if isinstance(genders[i], str) else ""
+                if g == "m" or "männlich" in g or "male" in g:
+                    result[name] = "Herr"
+                elif g == "w" or "weiblich" in g or "female" in g:
+                    result[name] = "Frau"
+                else:
+                    result[name] = None
+            else:
+                result[name] = None
+
+        return result
+
+    except Exception as e:
+        logging.error(f"Batch gender determination failed: {e}")
+        for name in names_to_query:
+            result[name] = None
+        return result
+
+
 def determine_salutation_for_customer(customer_name: str) -> Optional[str]:
     """
     Determine salutation for a customer by extracting first name and using AI.
@@ -804,6 +1009,119 @@ def determine_salutation_for_customer(customer_name: str) -> Optional[str]:
     if not first_name:
         return None
     return determine_gender_via_ai(first_name)
+
+
+def validate_customer_names_batch_via_ai(customer_names: list[str]) -> dict[str, bool]:
+    """
+    Use Nebius AI to validate whether customer names are plausible person names.
+    Returns a dict mapping customer_name -> True (valid) / False (invalid/suspicious)
+
+    Examples of invalid names:
+    - "Herr" (just a title)
+    - "Bischheim", "Marnheim" (place names)
+    - "b7 Dialyse" (institution/company name)
+    """
+    if not customer_names:
+        return {}
+
+    result = {}
+
+    # Pre-filter: Single words (no spaces) are automatically invalid
+    # A valid customer name should have at least first + last name
+    names_for_ai = []
+    for name in customer_names:
+        name_stripped = name.strip()
+        if ' ' not in name_stripped:
+            # Single word = invalid (could be place name, title, etc.)
+            result[name] = False
+        else:
+            names_for_ai.append(name)
+
+    # If all names were single words, return early
+    if not names_for_ai:
+        return result
+
+    try:
+        api_key = os.getenv('NEBIUS_API_KEY')
+        if not api_key:
+            # If no API key, assume remaining names are valid (don't flag them)
+            for name in names_for_ai:
+                result[name] = True
+            return result
+
+        url = "https://api.studio.nebius.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        names_list = ", ".join(f'"{name}"' for name in names_for_ai)
+        prompt = f"""Prüfe ob folgende Einträge gültige Kunden-Bezeichnungen für eine deutsche Apotheken-Rechnungssoftware sind: {names_list}
+
+GÜLTIG (true):
+- Personennamen mit Vor- UND Nachname (z.B. "Hans Müller", "Christel Bader")
+- Ehepaare (z.B. "Ulrike u. Rainer Ewald")
+- Arztpraxen (z.B. "Praxis Dr. Müller", "Praxis Orthopädie Dr. Reiners")
+- Medizinische Einrichtungen (z.B. "MVZ DaVita Alzey GmbH")
+- Praxisbedarf (z.B. "Praxisbedarf Dr. Filippi")
+
+IMMER UNGÜLTIG (false) - diese Fälle sind NIEMALS gültig:
+1. NUR "Herr" oder NUR "Frau" ohne weiteren Namen → IMMER false
+2. Einzelne Ortsnamen (-heim, -berg, -dorf): "Bischheim", "Marnheim" → IMMER false
+3. Kryptische Codes: "Dialyse B7", "b7 Dialyse", "Station 3" → IMMER false
+
+Beispiel: ["Hans Müller", "Herr", "Bischheim", "Praxis Dr. Müller", "Dialyse B7"]
+Antwort: [true, false, false, true, false]
+
+"Herr" alleine = false! "Frau" alleine = false!
+
+Antworte NUR mit JSON-Array [true/false, ...]:"""
+
+        payload = {
+            "model": "meta-llama/Llama-3.3-70B-Instruct",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.1,
+            "max_tokens": len(names_for_ai) * 10 + 20
+        }
+
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+
+        data = response.json()
+        ai_response = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+
+        # Parse JSON response
+        try:
+            # Find JSON array in response
+            start = ai_response.find('[')
+            end = ai_response.rfind(']') + 1
+            if start >= 0 and end > start:
+                validities = json.loads(ai_response[start:end])
+            else:
+                # If parsing fails, assume remaining names are valid
+                for name in names_for_ai:
+                    result[name] = True
+                return result
+        except json.JSONDecodeError:
+            for name in names_for_ai:
+                result[name] = True
+            return result
+
+        # Map AI results to names_for_ai
+        for i, name in enumerate(names_for_ai):
+            if i < len(validities):
+                result[name] = bool(validities[i])
+            else:
+                result[name] = True  # Assume valid if missing
+
+        return result
+
+    except Exception as e:
+        logging.error(f"Batch name validation failed: {e}")
+        # On error, assume remaining names are valid (don't flag them)
+        for name in names_for_ai:
+            result[name] = True
+        return result
 
 
 def normalize_string(text: str) -> str:

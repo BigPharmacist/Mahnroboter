@@ -1540,6 +1540,35 @@ tr.paid-invoice:hover {
   border: none;
 }
 
+.filter-date-range {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+}
+
+.filter-date-input {
+  flex: 1;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  background: white;
+  min-width: 130px;
+}
+
+.filter-date-input:focus {
+  outline: none;
+  border-color: #4361ee;
+  box-shadow: 0 0 0 2px rgba(67, 97, 238, 0.15);
+}
+
+.date-range-separator {
+  color: #6b7280;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
 .filter-modal-footer {
   display: flex;
   justify-content: flex-end;
