@@ -256,7 +256,18 @@
                     <span class="badge badge-danger">2. Mahnung</span>
                   {% endif %}
                 </td>
-                <td>{{ first_inv.last_reminder_date|german_date if first_inv.last_reminder_date else '—' }}</td>
+                <td>
+                  {% if group.reminder_pdf_path and letterxpress_status.get(group.reminder_pdf_path) %}
+                    <div class="lx-status-info">
+                      <span class="lx-job-id" title="{{ letterxpress_status[group.reminder_pdf_path].mode|upper }}-Modus">
+                        ✅ #{{ letterxpress_status[group.reminder_pdf_path].job_id }}
+                      </span>
+                      <small class="lx-date">{{ letterxpress_status[group.reminder_pdf_path].submitted_at }}</small>
+                    </div>
+                  {% else %}
+                    {{ first_inv.last_reminder_date|german_date if first_inv.last_reminder_date else '—' }}
+                  {% endif %}
+                </td>
                 <td>
                   {% if group.reminder_pdf_path %}
                     <a href="{{ url_for('serve_pdf', relative_path=group.reminder_pdf_path) }}"
@@ -380,7 +391,18 @@
                     <br><small class="muted">{{ invoice.letterexpress_status }}</small>
                   {% endif %}
                 </td>
-                <td>{{ invoice.last_reminder_date|german_date if invoice.last_reminder_date else '—' }}</td>
+                <td>
+                  {% if invoice.reminder_pdf_path and letterxpress_status.get(invoice.reminder_pdf_path) %}
+                    <div class="lx-status-info">
+                      <span class="lx-job-id" title="{{ letterxpress_status[invoice.reminder_pdf_path].mode|upper }}-Modus">
+                        ✅ #{{ letterxpress_status[invoice.reminder_pdf_path].job_id }}
+                      </span>
+                      <small class="lx-date">{{ letterxpress_status[invoice.reminder_pdf_path].submitted_at }}</small>
+                    </div>
+                  {% else %}
+                    {{ invoice.last_reminder_date|german_date if invoice.last_reminder_date else '—' }}
+                  {% endif %}
+                </td>
                 <td>
                   {% if invoice.reminder_pdf_path %}
                     <a href="{{ url_for('serve_pdf', relative_path=invoice.reminder_pdf_path) }}"
@@ -1686,6 +1708,24 @@ const showUncollectibleInvoices = {{ 'true' if show_uncollectible else 'false' }
   border: solid white;
   border-width: 0 3px 3px 0;
   transform: rotate(45deg);
+}
+
+/* LetterXpress Status Styles */
+.lx-status-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.lx-job-id {
+  font-weight: 600;
+  color: #155724;
+  font-size: 0.9rem;
+}
+
+.lx-date {
+  color: #6c757d;
+  font-size: 0.8rem;
 }
 </style>
 

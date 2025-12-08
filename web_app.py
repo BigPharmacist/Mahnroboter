@@ -572,6 +572,30 @@ def determine_salutation_for_customer(customer_name: str) -> Optional[str]:
     return determine_gender_via_ai(first_name)
 
 
+def get_customer_custom_address(conn: sqlite3.Connection, customer_name: str) -> Optional[Tuple[str, str, str]]:
+    """
+    Get custom address for a customer from customer_details table.
+
+    Args:
+        conn: Database connection
+        customer_name: Customer name to lookup
+
+    Returns:
+        Tuple of (custom_name, custom_street, custom_city) if custom address exists, None otherwise
+    """
+    cursor = conn.execute(
+        "SELECT custom_name, custom_street, custom_city FROM customer_details WHERE customer_name = ?",
+        (customer_name,)
+    )
+    row = cursor.fetchone()
+
+    if row and row[0] and row[1] and row[2]:
+        # All custom fields must be present
+        return (row[0], row[1], row[2])
+
+    return None
+
+
 def draw_justified_paragraph(c, text, x, y, width, font_size=10, font_name='Helvetica'):
     """
     Draw a justified paragraph at given position.
@@ -1899,6 +1923,31 @@ def create_app(config: Optional[dict] = None) -> Flask:
         hide_never_remind = request.args.get("hide_never_remind", "true").lower() == "true"  # Default: hide customers with never_remind=1
         only_actionable = request.args.get("only_actionable", "true").lower() == "true"  # Default: show only invoices that need action (have recommendation)
 
+        # Fetch LetterXpress status from database
+        letterxpress_status = {}
+        try:
+            with sqlite3.connect(app.config["DATABASE"]) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT pdf_path, letterxpress_job_id, mode, submitted_at FROM mahnungen_letterxpress"
+                ).fetchall()
+                for row in rows:
+                    # Format timestamp for display
+                    submitted_at = row["submitted_at"]
+                    try:
+                        dt = datetime.fromisoformat(submitted_at.replace('Z', '+00:00'))
+                        formatted_date = dt.strftime("%d.%m.%Y %H:%M")
+                    except:
+                        formatted_date = submitted_at
+
+                    letterxpress_status[row["pdf_path"]] = {
+                        "job_id": row["letterxpress_job_id"],
+                        "mode": row["mode"],
+                        "submitted_at": formatted_date
+                    }
+        except Exception as e:
+            logging.error(f"Failed to fetch LetterXpress status for mahnungen: {e}")
+
         # Fetch all invoices to calculate tab counts
         all_unbemahnt = fetch_invoices_with_reminders(app.config["DATABASE"], filter_reminded=False, hide_never_remind=hide_never_remind)
         # Filter for actionable invoices (those with a recommendation) if only_actionable is True
@@ -2015,7 +2064,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
             stats=stats,
             show_uncollectible=show_uncollectible,
             hide_never_remind=hide_never_remind,
-            only_actionable=only_actionable
+            only_actionable=only_actionable,
+            letterxpress_status=letterxpress_status
         )
 
     @app.route("/vorlagen")
@@ -2767,7 +2817,9 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     # Use optimized function that skips already completed folders
                     completed_folders = get_completed_folders(conn)
                     if completed_folders:
-                        yield f"data: {json.dumps({'type': 'info', 'message': f'{len(completed_folders)} bereits importierte Ordner werden übersprungen: {', '.join(sorted(completed_folders))}'})}\n\n"
+                        folders_str = ', '.join(sorted(completed_folders))
+                        message = f'{len(completed_folders)} bereits importierte Ordner werden übersprungen: {folders_str}'
+                        yield f"data: {json.dumps({'type': 'info', 'message': message})}\n\n"
 
                     pdf_files = list(find_pdfs_for_import(root, conn))
                     total_pdfs = len(pdf_files)
@@ -2835,7 +2887,9 @@ def create_app(config: Optional[dict] = None) -> Flask:
                             logging.info(f"Ordner '{folder_name}' als komplett importiert markiert")
 
                     if marked_complete:
-                        yield f"data: {json.dumps({'type': 'info', 'message': f'{len(marked_complete)} Ordner als vollständig importiert markiert: {', '.join(marked_complete)}'})}\n\n"
+                        folders_str = ', '.join(marked_complete)
+                        message = f'{len(marked_complete)} Ordner als vollständig importiert markiert: {folders_str}'
+                        yield f"data: {json.dumps({'type': 'info', 'message': message})}\n\n"
 
                 # Send completion message
                 yield f"data: {json.dumps({'type': 'complete', 'success': new_count, 'skipped': skipped_count, 'failed': error_count, 'total': total_pdfs, 'errors': errors, 'processed_folders': list(processed_folders)})}\n\n"
@@ -3526,14 +3580,23 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
                     inv_id, inv_number, inv_date, cust_name, cust_address, cust_street, cust_city, amount_cents, file_path = row
 
-                    # Construct full address from street and city (fallback to old address field if needed)
-                    if cust_street and cust_city:
-                        full_address = f"{cust_street}, {cust_city}"
+                    # Try to get custom address from customer_details first (for consistent addresses across invoices)
+                    custom_address_data = get_customer_custom_address(conn, cust_name)
+                    if custom_address_data:
+                        custom_name, custom_street, custom_city = custom_address_data
+                        # Use custom address for grouping and PDF generation
+                        full_address = f"{custom_street}, {custom_city}"
+                        display_name = custom_name  # Use custom name if set
                     else:
-                        full_address = cust_address or ""
+                        # Fallback: Construct address from invoice data
+                        if cust_street and cust_city:
+                            full_address = f"{cust_street}, {cust_city}"
+                        else:
+                            full_address = cust_address or ""
+                        display_name = cust_name
 
                     # Group by customer name and reminder level
-                    key = (cust_name, full_address, reminder_level)
+                    key = (display_name, full_address, reminder_level)
                     grouped[key].append({
                         'id': inv_id,
                         'number': inv_number or f"#{inv_id}",
@@ -3547,8 +3610,12 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 root = BASE_DIR
 
                 for (customer_name, customer_address, reminder_level), invoice_list in grouped.items():
-                    # Get salutation for customer
-                    salutation = determine_salutation_for_customer(customer_name)
+                    # Get salutation for customer from customer_details, or determine via AI
+                    salutation_row = conn.execute(
+                        "SELECT salutation FROM customer_details WHERE customer_name = ?",
+                        (customer_name,)
+                    ).fetchone()
+                    salutation = salutation_row[0] if salutation_row and salutation_row[0] else determine_salutation_for_customer(customer_name)
 
                     # Create reminder PDF (letter)
                     reminder_pdf_bytes = create_reminder_pdf(
@@ -3768,8 +3835,17 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     salutation = customer_row["salutation"] if customer_row else None
                     bank_debit = customer_row["bank_debit"] if customer_row and "bank_debit" in customer_row.keys() else 0
 
-                    # Use the address from the first invoice
-                    customer_address = current_month_invoices[0].customer_address if current_month_invoices else customer_invoice_list[0].customer_address
+                    # Try to get custom address from customer_details first (for consistent addresses)
+                    custom_address_data = get_customer_custom_address(conn, customer_name)
+                    if custom_address_data:
+                        custom_name, custom_street, custom_city = custom_address_data
+                        customer_address = f"{custom_street}, {custom_city}"
+                        # Use custom name if set
+                        display_customer_name = custom_name
+                    else:
+                        # Fallback: Use the address from the first invoice
+                        customer_address = current_month_invoices[0].customer_address if current_month_invoices else customer_invoice_list[0].customer_address
+                        display_customer_name = customer_name
 
                     # Prepare current month invoices list
                     current_month_list = []
@@ -3791,7 +3867,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
                     # Create cover letter PDF
                     cover_letter_bytes = create_cover_letter_pdf(
-                        customer_name=customer_name,
+                        customer_name=display_customer_name,
                         customer_address=customer_address,
                         current_month_invoices=current_month_list,
                         older_open_invoices=older_open_list,
@@ -3823,7 +3899,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     # Add SEPA-Lastschriftmandat at the end if requested and customer doesn't have bank_debit enabled
                     if include_sepa and not bank_debit:
                         sepa_mandate_bytes = create_sepa_mandate_pdf(
-                            customer_name=customer_name,
+                            customer_name=display_customer_name,
                             customer_address=customer_address
                         )
                         sepa_mandate_pdf = PdfReader(io.BytesIO(sepa_mandate_bytes))
@@ -3833,7 +3909,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     # Add email consent form if requested
                     if include_email_consent:
                         email_consent_bytes = create_email_consent_form_pdf(
-                            customer_name=customer_name
+                            customer_name=display_customer_name
                         )
                         email_consent_pdf = PdfReader(io.BytesIO(email_consent_bytes))
                         for page in email_consent_pdf.pages:
@@ -3842,7 +3918,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     # Save combined PDF
                     # Sanitize filename
                     safe_customer_name = "".join(
-                        c for c in customer_name if c.isalnum() or c in (' ', '-', '_')
+                        c for c in display_customer_name if c.isalnum() or c in (' ', '-', '_')
                     ).strip()
                     # Add timestamp to prevent overwriting files when creating multiple collective invoices for the same customer in the same month
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
