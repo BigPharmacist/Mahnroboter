@@ -615,21 +615,132 @@ def draw_justified_paragraph(c, text, x, y, width, font_size=10, font_name='Helv
     return y - h  # return new y position
 
 
+def draw_modern_footer(c, left_margin, right_margin, footer_y, include_bank_details=True):
+    """
+    Draw a modern, 3-column footer with balanced layout.
+
+    Args:
+        c: Canvas object
+        left_margin: Left margin
+        right_margin: Right margin
+        footer_y: Y position for footer
+        include_bank_details: If True, include bank details (for Sammelrechnung)
+    """
+    from reportlab.lib.colors import HexColor
+
+    primary_color = HexColor("#123C69")
+    black = HexColor("#000000")
+    gray = HexColor("#666666")
+
+    # Trennlinie (gestrichelt, elegant)
+    c.setStrokeColor(HexColor("#cccccc"))
+    c.setDash(2, 2)
+    c.line(left_margin, footer_y + 15*mm, right_margin, footer_y + 15*mm)
+    c.setDash()
+
+    y_start = footer_y + 2*mm
+
+    # === 3-SPALTEN-LAYOUT (gleichmäßig verteilt) ===
+    page_width = right_margin - left_margin
+    col_width = page_width / 3
+
+    # Spalte 1: LINKS (Adresse)
+    col1_x = left_margin
+
+    # Spalte 2: MITTE (Kontakt)
+    col2_x = left_margin + col_width
+
+    # Spalte 3: RECHTS (Bank oder Rechtliches)
+    col3_x = left_margin + (col_width * 2)
+
+    # === SPALTE 1: ADRESSE (LINKS) ===
+    y = y_start
+    c.setFillColor(primary_color)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(col1_x, y, "Apotheke am Damm")
+
+    y -= 4*mm
+    c.setFillColor(gray)
+    c.setFont("Helvetica", 7)
+    c.drawString(col1_x, y, "Inh. Matthias Blüm, e.K.")
+
+    y -= 3.5*mm
+    c.drawString(col1_x, y, "Am Damm 17")
+
+    y -= 3.5*mm
+    c.drawString(col1_x, y, "55232 Alzey")
+
+    # === SPALTE 2: KONTAKT (MITTE) ===
+    y = y_start
+    c.setFillColor(primary_color)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(col2_x, y, "Kontakt")
+
+    y -= 4*mm
+    c.setFillColor(gray)
+    c.setFont("Helvetica", 7)
+    c.drawString(col2_x, y, "Tel: 06731-548846")
+
+    y -= 3.5*mm
+    c.drawString(col2_x, y, "Fax: 06731-548847")
+
+    y -= 3.5*mm
+    c.drawString(col2_x, y, "info@apothekeamdamm.de")
+
+    y -= 3.5*mm
+    c.drawString(col2_x, y, "WhatsApp: 06731-548846")
+
+    # === SPALTE 3: BANK ODER RECHTLICHES (RECHTS) ===
+    y = y_start
+
+    if include_bank_details:
+        # Bei Sammelrechnung: Bankverbindung
+        c.setFillColor(primary_color)
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(col3_x, y, "Bankverbindung")
+
+        y -= 4*mm
+        c.setFillColor(gray)
+        c.setFont("Helvetica", 7)
+        c.drawString(col3_x, y, "Sparkasse Worms-Alzey-Ried")
+
+        y -= 3.5*mm
+        c.setFont("Helvetica", 6.5)
+        c.drawString(col3_x, y, "IBAN: DE51 5535 0010")
+        y -= 2.5*mm
+        c.drawString(col3_x, y, "0033 7173 83")
+
+        y -= 3.5*mm
+        c.drawString(col3_x, y, "BIC: MALADE51WOR")
+    else:
+        # Bei Mahnungen: Rechtliches
+        c.setFillColor(primary_color)
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(col3_x, y, "Rechtliches")
+
+        y -= 4*mm
+        c.setFillColor(gray)
+        c.setFont("Helvetica", 7)
+        c.drawString(col3_x, y, "HRA 31710")
+
+        y -= 3.5*mm
+        c.drawString(col3_x, y, "Amtsgericht Mainz")
+
+        y -= 3.5*mm
+        c.drawString(col3_x, y, "USt-IdNr. DE814983365")
+
+
+# Legacy function names for backwards compatibility
 def draw_footer(c, left_margin, width, footer_y):
-    """Draw footer with bank details and company info (for Sammelrechnungen)."""
-    c.setFont("Helvetica", 8)
-    c.line(left_margin, footer_y + 15, width - 25 * mm, footer_y + 15)
-    c.drawString(left_margin, footer_y, "Bankverbindung: Sparkasse Worms-Alzey-Ried, IBAN: DE51 5535 0010 0033 7173 83, BIC: MALADE51WOR")
-    c.drawString(left_margin, footer_y - 10, "Inhaber: Matthias Blüm")
-    c.drawString(left_margin, footer_y - 20, "Gerichtsstand: Mainz | HRA-Nummer: 31710")
+    """Legacy wrapper for draw_modern_footer (Sammelrechnungen)."""
+    right_margin = width - 25*mm
+    draw_modern_footer(c, left_margin, right_margin, footer_y, include_bank_details=True)
 
 
 def draw_reminder_footer(c, left_margin, width, footer_y):
-    """Draw footer for reminder documents (Mahnungen)."""
-    c.setFont("Helvetica", 7)
-    c.line(left_margin, footer_y + 15, width - 25 * mm, footer_y + 15)
-    c.drawString(left_margin, footer_y, "Apotheke am Damm | Inh. Matthias Blüm, e.K. | Am Damm 17 | 55232 Alzey")
-    c.drawString(left_margin, footer_y - 9, "Handelsregister: HRA 31710, Registergericht: Amtsgericht Mainz | USt-IdNr. DE814983365")
+    """Legacy wrapper for draw_modern_footer (Mahnungen)."""
+    right_margin = width - 25*mm
+    draw_modern_footer(c, left_margin, right_margin, footer_y, include_bank_details=False)
 
 
 def check_page_break(c, current_y, needed_space, left_margin, width, height, is_reminder=False):
@@ -675,49 +786,60 @@ def create_cover_letter_pdf(
     salutation: Optional[str] = None
 ) -> bytes:
     """
-    Create a cover letter PDF with recipient address positioned at 66-88mm from top.
+    Create a modern cover letter PDF for Sammelrechnungen.
 
     Args:
         customer_name: Name of the customer
         customer_address: Full address of the customer
-        current_month_invoices: List of invoices from the latest month with date, number, and amount
-        older_open_invoices: List of older open invoices with date, number, and amount
-        salutation: Salutation for the customer (e.g., "Herr", "Frau")
+        current_month_invoices: List of invoices from the latest month
+        older_open_invoices: List of older open invoices
+        salutation: Salutation for the customer
 
     Returns:
         PDF bytes
     """
+    from reportlab.lib.colors import HexColor
+
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
 
-    # Return address (small, above recipient address)
-    # DIN 5008: starts at 44mm from top, max height 5mm
-    # ADJUSTED: +5mm right, +4mm down
-    left_margin = 25 * mm  # Was 20 * mm
-    return_address_y = height - (48 * mm)  # Was (44 * mm)
+    # Colors
+    primary_color = HexColor("#123C69")
+    black = HexColor("#000000")
+    box_bg = HexColor("#f0f4f8")
 
-    # Pharmacy info (right side, starting at 44mm)
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(360, return_address_y, "Apotheke am Damm")
-    c.setFont("Helvetica", 10)
-    c.drawString(360, return_address_y - 15, "Am Damm 17")
-    c.drawString(360, return_address_y - 30, "55232 Alzey")
-    c.drawString(360, return_address_y - 45, "Tel.: 06731-548846")
-    c.drawString(360, return_address_y - 60, "Fax: 06731-548847")
+    # Margins (DIN 5008 konform - ADJUSTED)
+    left_margin = 25 * mm  # ADJUSTED: +5mm nach rechts (war 20mm)
+    right_margin = width - 25 * mm
+
+    # === KOPFBEREICH (MODERN) ===
+    y_pos = height - 25*mm
+
+    c.setFillColor(primary_color)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(left_margin, y_pos, "Apotheke am Damm")
+
+    y_pos -= 6*mm
+    c.setFillColor(black)
+    c.setFont("Helvetica", 9)
+    c.drawString(left_margin, y_pos, "Am Damm 17 | 55232 Alzey")
+
+    # Rücksendeadresse (klein, DIN 5008)
+    # DIN 5008: 44mm von oben - ADJUSTED: +4mm nach unten
+    return_address_y = height - (48 * mm)
     c.setFont("Helvetica", 8)
     c.drawString(left_margin, return_address_y, "Apotheke am Damm, Am Damm 17, 55232 Alzey")
 
-    # Recipient address (must be between 66mm and 88mm from top - DIN 5008)
-    # ADJUSTED: +10mm down, +5mm right
-    recipient_y_start = height - (76 * mm)  # Was (66 * mm)
-    c.setFont("Helvetica", 11)
+    # === EMPFÄNGERADRESSE (DIN 5008: 66-88mm) ===
+    # DIN 5008: 66-88mm von oben - ADJUSTED: +10mm nach unten (76mm)
+    recipient_y_start = height - (76 * mm)
 
     # Parse address
     address_lines = customer_address.split('\n') if '\n' in customer_address else customer_address.split(',')
     address_lines = [line.strip() for line in address_lines if line.strip()]
 
-    # Determine greeting
+    # Greeting line
     if salutation and salutation.lower() in ['herr', 'herrn']:
         greeting_line = f"Herr {customer_name}"
     elif salutation and salutation.lower() == 'frau':
@@ -736,30 +858,35 @@ def create_cover_letter_pdf(
     for i, line in enumerate(address_lines):
         c.drawString(left_margin, recipient_y_start - ((i + 1) * line_height), line)
 
-    # Date
+    # === DATUM ===
     date_y = height - (106 * mm)
     today = datetime.now().strftime("%d.%m.%Y")
     c.setFont("Helvetica", 10)
-    c.drawRightString(width - 25 * mm, date_y, f"Alzey, {today}")
+    c.drawRightString(right_margin, date_y, f"Alzey, {today}")
 
-    # Subject line
+    # === BETREFFZEILE (MIT FARBE) ===
     subject_y = date_y - 20
-    c.setFont("Helvetica-Bold", 12)
+    c.setFillColor(primary_color)
+    c.setFont("Helvetica-Bold", 14)
 
-    # Get the month/year from first current invoice
+    # Month/year from first invoice
     if current_month_invoices:
         first_date = datetime.strptime(current_month_invoices[0]['date'], '%Y-%m-%d')
         month_year = first_date.strftime("%m.%Y")
         if len(current_month_invoices) == 1:
-            c.drawString(left_margin, subject_y, f"Ihre Monatsrechnung {month_year}")
+            subject_text = f"Ihre Monatsrechnung {month_year}"
         else:
-            c.drawString(left_margin, subject_y, f"Ihre Monatsrechnungen {month_year}")
+            subject_text = f"Ihre Monatsrechnungen {month_year}"
     else:
-        c.drawString(left_margin, subject_y, "Ihre Monatsrechnungen")
+        subject_text = "Ihre Monatsrechnungen"
 
-    # Salutation
+    c.drawString(left_margin, subject_y, subject_text)
+
+    # === ANREDE ===
     content_y = subject_y - 25
+    c.setFillColor(black)
     c.setFont("Helvetica", 10)
+
     if salutation and salutation.lower() in ['herr', 'herrn']:
         salutation_text = f"Sehr geehrter Herr {customer_name.split()[-1]},"
     elif salutation and salutation.lower() == 'frau':
@@ -771,32 +898,40 @@ def create_cover_letter_pdf(
 
     c.drawString(left_margin, content_y, salutation_text)
 
-    # Main text
+    # === HAUPTTEXT ===
     content_y -= 20
     if len(current_month_invoices) == 1:
         c.drawString(left_margin, content_y, "anbei erhalten Sie Ihre aktuelle Rechnung:")
     else:
         c.drawString(left_margin, content_y, "anbei erhalten Sie Ihre aktuellen Rechnungen:")
 
-    # Table for current month invoices
-    content_y -= 20
-    c.setFont("Helvetica-Bold", 9)
+    # === TABELLE MIT MODERNEM STYLING ===
+    content_y -= 25
 
-    # Table header
-    col1_x = left_margin + 10  # Rechnungsnummer
-    col2_x = left_margin + 120  # Datum
-    col3_x = left_margin + 220  # Betrag (rechts ausgerichtet)
+    # Table header (mit Farbe)
+    c.setFillColor(primary_color)
+    c.setFont("Helvetica-Bold", 10)
+
+    col1_x = left_margin + 10
+    col2_x = left_margin + 110
+    col3_x = right_margin - 70
 
     c.drawString(col1_x, content_y, "Rechnungs-Nr.")
     c.drawString(col2_x, content_y, "Datum")
     c.drawRightString(col3_x, content_y, "Betrag")
 
-    content_y -= 2
-    c.line(left_margin + 10, content_y, col3_x, content_y)
-    content_y -= 10
+    content_y -= 3
+    c.setStrokeColor(primary_color)
+    c.setLineWidth(1.5)
+    c.line(left_margin, content_y, right_margin - 60, content_y)
+    content_y -= 12
 
     # Table rows
-    c.setFont("Helvetica", 9)
+    c.setFillColor(black)
+    c.setFont("Helvetica", 10)
+    c.setStrokeColor(black)
+    c.setLineWidth(1)
+
     total_current = 0.0
     for inv in current_month_invoices:
         inv_date_str = datetime.strptime(inv['date'], '%Y-%m-%d').strftime('%d.%m.%Y')
@@ -804,40 +939,47 @@ def create_cover_letter_pdf(
         c.drawString(col2_x, content_y, inv_date_str)
         c.drawRightString(col3_x, content_y, f"{inv['amount']:.2f} €")
         total_current += inv['amount']
-        content_y -= 12
+        content_y -= 14
 
-    # Total line
-    content_y -= 2
-    c.line(left_margin + 10, content_y, col3_x, content_y)
-    content_y -= 10
-    c.setFont("Helvetica-Bold", 9)
-    c.drawString(col1_x, content_y, "Gesamtsumme:")
-    c.drawRightString(col3_x, content_y, f"{total_current:.2f} €")
+    # === GESAMTSUMME IN BOX ===
+    content_y -= 5
+    box_height = 15
+    c.setFillColor(box_bg)
+    c.rect(left_margin, content_y - box_height, right_margin - left_margin - 60, box_height, stroke=0, fill=1)
 
-    # Older open invoices section
+    c.setFillColor(primary_color)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(col1_x, content_y - 10, "Gesamtsumme:")
+    c.drawRightString(col3_x, content_y - 10, f"{total_current:.2f} €")
+
+    content_y -= box_height + 10
+
+    # === ÄLTERE RECHNUNGEN (FALLS VORHANDEN) ===
     if older_open_invoices:
-        # Check if we need a page break (header + rows + footer + margin)
-        needed_space = 70 + (len(older_open_invoices) * 12)
-        content_y = check_page_break(c, content_y, needed_space, left_margin, width, height)
-
         content_y -= 20
+        c.setFillColor(black)
         c.setFont("Helvetica", 10)
         c.drawString(left_margin, content_y, "Bitte beachten Sie außerdem folgende noch offenen Rechnungen:")
 
-        content_y -= 15
-        c.setFont("Helvetica-Bold", 9)
+        content_y -= 20
 
-        # Table header for older invoices
+        # Table header
+        c.setFillColor(primary_color)
+        c.setFont("Helvetica-Bold", 10)
         c.drawString(col1_x, content_y, "Rechnungs-Nr.")
         c.drawString(col2_x, content_y, "Datum")
         c.drawRightString(col3_x, content_y, "Betrag")
 
-        content_y -= 2
-        c.line(left_margin + 10, content_y, col3_x, content_y)
-        content_y -= 10
+        content_y -= 3
+        c.setStrokeColor(primary_color)
+        c.line(left_margin, content_y, right_margin - 60, content_y)
+        content_y -= 12
 
-        # Table rows for older invoices
-        c.setFont("Helvetica", 9)
+        # Rows
+        c.setFillColor(black)
+        c.setFont("Helvetica", 10)
+        c.setStrokeColor(black)
+
         total_older = 0.0
         for inv in older_open_invoices:
             inv_date_str = datetime.strptime(inv['date'], '%Y-%m-%d').strftime('%d.%m.%Y')
@@ -845,31 +987,37 @@ def create_cover_letter_pdf(
             c.drawString(col2_x, content_y, inv_date_str)
             c.drawRightString(col3_x, content_y, f"{inv['amount']:.2f} €")
             total_older += inv['amount']
-            content_y -= 12
+            content_y -= 14
 
-        # Total line for older invoices
-        content_y -= 2
-        c.line(left_margin + 10, content_y, col3_x, content_y)
-        content_y -= 10
-        c.setFont("Helvetica-Bold", 9)
-        c.drawString(col1_x, content_y, "Summe offener Rechnungen:")
-        c.drawRightString(col3_x, content_y, f"{total_older:.2f} €")
+        # Sum box
+        content_y -= 5
+        c.setFillColor(box_bg)
+        c.rect(left_margin, content_y - box_height, right_margin - left_margin - 60, box_height, stroke=0, fill=1)
 
-    # Co-payment exemption notice (before closing)
+        c.setFillColor(primary_color)
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(col1_x, content_y - 10, "Summe offener Rechnungen:")
+        c.drawRightString(col3_x, content_y - 10, f"{total_older:.2f} €")
+
+        content_y -= box_height + 10
+
+    # === HINWEIS ZUZAHLUNGSBEFREIUNG ===
     content_y -= 25
-    c.setFont("Helvetica-Bold", 10)
+    c.setFillColor(primary_color)
+    c.setFont("Helvetica-Bold", 11)
     c.drawString(left_margin, content_y, "Hinweis bei Zuzahlungsbefreiung:")
 
     content_y -= 15
-    text_width = width - left_margin - 25 * mm
+    text_width = right_margin - left_margin
+    c.setFillColor(black)
     text = ("Trotz Befreiung von der Rezeptgebühr ist der Rechnungsbetrag fällig, da das Rezept/die Rezepte vom "
             "Arzt als \"gebührenpflichtig\" gekennzeichnet wurde(n). Mit dieser Rechnung und einem "
             "Zahlungsnachweis erhalten Sie den Betrag von Ihrer Krankenkasse erstattet. Bitte reichen Sie uns "
             "ebenfalls eine Kopie des Befreiungsausweises ein. Für Rückfragen helfen wir Ihnen natürlich gerne "
             "weiter.")
-    content_y = draw_justified_paragraph(c, text, left_margin, content_y, text_width, font_size=10)
+    content_y = draw_justified_paragraph(c, text, left_margin, content_y, text_width, font_size=9)
 
-    # Closing
+    # === SCHLUSS ===
     content_y -= 20
     c.setFont("Helvetica", 10)
     c.drawString(left_margin, content_y, "Wir bedanken uns herzlich für Ihr Vertrauen und Ihre Treue.")
@@ -877,11 +1025,13 @@ def create_cover_letter_pdf(
     content_y -= 20
     c.drawString(left_margin, content_y, "Mit freundlichen Grüßen")
     content_y -= 10
-    c.setFont("Helvetica-Bold", 10)
+    c.setFillColor(primary_color)
+    c.setFont("Helvetica-Bold", 11)
     c.drawString(left_margin, content_y, "Ihr Team der Apotheke am Damm")
 
-    # Footer
-    draw_footer(c, left_margin, width, 80)
+    # === FOOTER ===
+    footer_y = 20*mm
+    draw_modern_footer(c, left_margin, right_margin, footer_y, include_bank_details=True)
 
     c.save()
     buffer.seek(0)
@@ -896,50 +1046,62 @@ def create_reminder_pdf(
     salutation: Optional[str] = None
 ) -> bytes:
     """
-    Create a payment reminder or dunning letter PDF with multiple invoices.
+    Create a modern payment reminder or dunning letter PDF.
 
     Args:
         customer_name: Name of the customer
         customer_address: Full address of the customer
         invoices: List of invoices with date, number, and amount
         reminder_level: 0 = Zahlungserinnerung, 1 = 1. Mahnung, 2 = 2. Mahnung
-        salutation: Salutation for the customer (e.g., "Herr", "Frau")
+        salutation: Salutation for the customer
 
     Returns:
         PDF bytes
     """
+    from reportlab.lib.colors import HexColor
+
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
 
-    # Return address (small, above recipient address)
-    # DIN 5008: starts at 44mm from top, max height 5mm
-    # ADJUSTED: +5mm right, +4mm down
-    left_margin = 25 * mm
-    return_address_y = height - (48 * mm)
+    # Colors
+    primary_color = HexColor("#123C69")
+    black = HexColor("#000000")
+    box_bg = HexColor("#f0f4f8")
+    warning_color = HexColor("#dc3545")  # Red for level 2
+    warning_bg = HexColor("#fff3cd")  # Yellow warning box
 
-    # Pharmacy info (right side, starting at 48mm)
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(360, return_address_y, "Apotheke am Damm")
-    c.setFont("Helvetica", 10)
-    c.drawString(360, return_address_y - 15, "Inh. Matthias Blüm, e.K.")
-    c.drawString(360, return_address_y - 30, "Am Damm 17")
-    c.drawString(360, return_address_y - 45, "55232 Alzey")
-    c.drawString(360, return_address_y - 60, "Tel.: 06731-548846")
-    c.drawString(360, return_address_y - 75, "info@apothekeamdamm.de")
+    # Margins (DIN 5008 konform - ADJUSTED)
+    left_margin = 25 * mm  # ADJUSTED: +5mm nach rechts (war 20mm)
+    right_margin = width - 25 * mm
+
+    # === KOPFBEREICH (MODERN) ===
+    y_pos = height - 25*mm
+
+    c.setFillColor(primary_color)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(left_margin, y_pos, "Apotheke am Damm")
+
+    y_pos -= 6*mm
+    c.setFillColor(black)
+    c.setFont("Helvetica", 9)
+    c.drawString(left_margin, y_pos, "Am Damm 17 | 55232 Alzey | Tel: 06731-548846")
+
+    # Rücksendeadresse (klein, DIN 5008)
+    # DIN 5008: 44mm von oben - ADJUSTED: +4mm nach unten
+    return_address_y = height - (48 * mm)
     c.setFont("Helvetica", 8)
     c.drawString(left_margin, return_address_y, "Apotheke am Damm, Am Damm 17, 55232 Alzey")
 
-    # Recipient address (must be between 66mm and 88mm from top - DIN 5008)
-    # ADJUSTED: +10mm down, +5mm right
+    # === EMPFÄNGERADRESSE (DIN 5008: 66-88mm) ===
+    # DIN 5008: 66-88mm von oben - ADJUSTED: +10mm nach unten (76mm)
     recipient_y_start = height - (76 * mm)
-    c.setFont("Helvetica", 11)
 
     # Parse address
     address_lines = customer_address.split('\n') if '\n' in customer_address else customer_address.split(',')
     address_lines = [line.strip() for line in address_lines if line.strip()]
 
-    # Determine greeting
+    # Greeting line
     if salutation and salutation.lower() in ['herr', 'herrn']:
         greeting_line = f"Herr {customer_name}"
     elif salutation and salutation.lower() == 'frau':
@@ -958,35 +1120,36 @@ def create_reminder_pdf(
     for i, line in enumerate(address_lines):
         c.drawString(left_margin, recipient_y_start - ((i + 1) * line_height), line)
 
-    # Date
+    # === DATUM ===
     date_y = height - (106 * mm)
     today = datetime.now().strftime("%d.%m.%Y")
     c.setFont("Helvetica", 10)
-    c.drawRightString(width - 25 * mm, date_y, f"Alzey, {today}")
+    c.drawRightString(right_margin, date_y, f"Alzey, {today}")
 
-    # Subject line
+    # === BETREFFZEILE (MIT FARBE - ROT FÜR LETZTE MAHNUNG) ===
     subject_y = date_y - 20
-    c.setFont("Helvetica-Bold", 12)
 
-    # Different subject based on reminder level
     level_names = {
         0: "Zahlungserinnerung",
         1: "1. Mahnung",
         2: "2. Mahnung - LETZTE ZAHLUNGSAUFFORDERUNG"
     }
-
     subject_text = level_names.get(reminder_level, "Zahlungserinnerung")
 
-    # Red color for level 2
+    # Color based on level
     if reminder_level == 2:
-        c.setFillColorRGB(0.52, 0.13, 0.16)  # Dark red
+        c.setFillColor(warning_color)
+    else:
+        c.setFillColor(primary_color)
 
+    c.setFont("Helvetica-Bold", 14)
     c.drawString(left_margin, subject_y, subject_text)
-    c.setFillColorRGB(0, 0, 0)  # Back to black
 
-    # Salutation
+    # === ANREDE ===
     content_y = subject_y - 25
+    c.setFillColor(black)
     c.setFont("Helvetica", 10)
+
     if salutation and salutation.lower() in ['herr', 'herrn']:
         salutation_text = f"Sehr geehrter Herr {customer_name.split()[-1]},"
     elif salutation and salutation.lower() == 'frau':
@@ -998,53 +1161,73 @@ def create_reminder_pdf(
 
     c.drawString(left_margin, content_y, salutation_text)
 
-    # Main text based on reminder level
+    # === HAUPTTEXT (ABHÄNGIG VON MAHNSTUFE) ===
     content_y -= 20
 
     if reminder_level == 0:
-        c.drawString(left_margin, content_y, "bei der Durchsicht unserer Buchhaltung ist uns aufgefallen, dass der")
-        content_y -= 12
-        c.drawString(left_margin, content_y, "Rechnungsbetrag für die unten aufgeführten Rechnungen noch nicht bei uns")
-        content_y -= 12
-        c.drawString(left_margin, content_y, "eingegangen ist. Wir bitten Sie, die offenen Beträge innerhalb von 14 Tagen")
-        content_y -= 12
-        c.drawString(left_margin, content_y, "auf unser Konto zu überweisen.")
+        text_lines = [
+            "bei der Durchsicht unserer Buchhaltung ist uns aufgefallen, dass der",
+            "Rechnungsbetrag für die unten aufgeführten Rechnungen noch nicht bei uns",
+            "eingegangen ist. Wir bitten Sie, die offenen Beträge innerhalb von 14 Tagen",
+            "auf unser Konto zu überweisen."
+        ]
     elif reminder_level == 1:
-        c.drawString(left_margin, content_y, "trotz unserer Zahlungserinnerung haben wir bisher keinen Zahlungseingang")
-        content_y -= 12
-        c.drawString(left_margin, content_y, "für die unten aufgeführten Rechnungen feststellen können. Wir fordern Sie")
-        content_y -= 12
-        c.drawString(left_margin, content_y, "hiermit auf, den ausstehenden Betrag innerhalb von 10 Tagen nach Erhalt")
-        content_y -= 12
-        c.drawString(left_margin, content_y, "dieses Schreibens zu überweisen.")
+        text_lines = [
+            "trotz unserer Zahlungserinnerung haben wir bisher keinen Zahlungseingang",
+            "für die unten aufgeführten Rechnungen feststellen können. Wir fordern Sie",
+            "hiermit auf, den ausstehenden Betrag innerhalb von 10 Tagen nach Erhalt",
+            "dieses Schreibens zu überweisen."
+        ]
     else:  # Level 2
-        c.drawString(left_margin, content_y, "trotz mehrmaliger Zahlungsaufforderungen ist der ausstehende Rechnungsbetrag")
-        content_y -= 12
-        c.setFont("Helvetica-Bold", 10)
-        c.drawString(left_margin, content_y, "bis heute nicht bei uns eingegangen. Dies ist unsere letzte Zahlungsaufforderung")
-        content_y -= 12
-        c.drawString(left_margin, content_y, "vor Einleitung rechtlicher Schritte.")
+        # Warning box for level 2
+        box_height = 45
+        box_width = right_margin - left_margin
+        c.setFillColor(warning_bg)
+        c.rect(left_margin, content_y - box_height, box_width, box_height, stroke=0, fill=1)
+
+        c.setFillColor(warning_color)
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(left_margin + 5, content_y - 10, "⚠ LETZTE ZAHLUNGSAUFFORDERUNG")
+
+        c.setFillColor(black)
         c.setFont("Helvetica", 10)
+        c.drawString(left_margin + 5, content_y - 25, "Trotz mehrmaliger Zahlungsaufforderungen ist der ausstehende")
+        c.drawString(left_margin + 5, content_y - 37, "Rechnungsbetrag bis heute nicht bei uns eingegangen.")
 
-    # Table for invoices
-    content_y -= 25
-    c.setFont("Helvetica-Bold", 9)
+        content_y -= box_height + 5
+        text_lines = []
 
-    # Table header
-    col1_x = left_margin + 10  # Rechnungsnummer
-    col2_x = left_margin + 120  # Datum
-    col3_x = left_margin + 220  # Betrag (rechts ausgerichtet)
+    for line in text_lines:
+        c.drawString(left_margin, content_y, line)
+        content_y -= 12
+
+    # === TABELLE MIT MODERNEM STYLING ===
+    content_y -= 15
+
+    # Table header (mit Farbe)
+    c.setFillColor(primary_color)
+    c.setFont("Helvetica-Bold", 10)
+
+    col1_x = left_margin + 10
+    col2_x = left_margin + 110
+    col3_x = right_margin - 70
 
     c.drawString(col1_x, content_y, "Rechnungs-Nr.")
     c.drawString(col2_x, content_y, "Datum")
     c.drawRightString(col3_x, content_y, "Betrag")
 
-    content_y -= 2
-    c.line(left_margin + 10, content_y, col3_x, content_y)
-    content_y -= 10
+    content_y -= 3
+    c.setStrokeColor(primary_color)
+    c.setLineWidth(1.5)
+    c.line(left_margin, content_y, right_margin - 60, content_y)
+    content_y -= 12
 
     # Table rows
-    c.setFont("Helvetica", 9)
+    c.setFillColor(black)
+    c.setFont("Helvetica", 10)
+    c.setStrokeColor(black)
+    c.setLineWidth(1)
+
     total_amount = 0.0
     for inv in invoices:
         inv_date_str = datetime.strptime(inv['date'], '%Y-%m-%d').strftime('%d.%m.%Y')
@@ -1052,136 +1235,136 @@ def create_reminder_pdf(
         c.drawString(col2_x, content_y, inv_date_str)
         c.drawRightString(col3_x, content_y, f"{inv['amount']:.2f} €")
         total_amount += inv['amount']
-        content_y -= 12
+        content_y -= 14
 
     # Add reminder fees (Mahngebühren) if applicable
     reminder_fee = 0.0
     if reminder_level == 1:
-        reminder_fee = 5.0  # 5€ for 1. Mahnung (from Zahlungserinnerung)
+        reminder_fee = 5.0  # 5€ for 1. Mahnung
     elif reminder_level == 2:
-        reminder_fee = 10.0  # 10€ for 2. Mahnung (from 1. Mahnung)
+        reminder_fee = 10.0  # 10€ for 2. Mahnung
 
     if reminder_fee > 0:
         c.drawString(col1_x, content_y, "Mahngebühren")
         c.drawString(col2_x, content_y, "")
         c.drawRightString(col3_x, content_y, f"{reminder_fee:.2f} €")
         total_amount += reminder_fee
-        content_y -= 12
+        content_y -= 14
 
-    # Total line
-    content_y -= 2
-    c.line(left_margin + 10, content_y, col3_x, content_y)
-    content_y -= 10
-    c.setFont("Helvetica-Bold", 9)
-    c.drawString(col1_x, content_y, "Gesamtbetrag:")
-    c.drawRightString(col3_x, content_y, f"{total_amount:.2f} €")
+    # === GESAMTSUMME IN BOX ===
+    content_y -= 5
+    box_height = 15
 
-    # Bank details
-    # Check if we need a page break (bank details + possible level 2 text + closing ~ 200 pixels)
-    content_y = check_page_break(c, content_y, 200, left_margin, width, height, is_reminder=True)
-
-    content_y -= 20
-    c.setFont("Helvetica", 10)
-    c.drawString(left_margin, content_y, "Bitte überweisen Sie den Betrag auf folgendes Konto:")
-
-    content_y -= 15
-    c.setFont("Helvetica", 9)
-    c.drawString(left_margin + 10, content_y, "Kontoinhaber: Apotheke am Damm")
-    content_y -= 12
-    c.drawString(left_margin + 10, content_y, "IBAN: DE51 5535 0010 0033 7173 83")
-    content_y -= 12
-    c.drawString(left_margin + 10, content_y, "BIC: MALADE51WOR")
-    content_y -= 12
-    c.drawString(left_margin + 10, content_y, "Verwendungszweck: Rechnungsnummer")
-
-    # Additional text for level 2
+    # Use warning color for level 2
     if reminder_level == 2:
-        content_y -= 20
-        c.setFont("Helvetica-Bold", 10)
-        c.drawString(left_margin, content_y, "Sollte der Betrag nicht innerhalb von 7 Tagen eingehen, werden wir ohne")
-        content_y -= 12
-        c.drawString(left_margin, content_y, "weitere Ankündigung folgende Maßnahmen ergreifen:")
+        c.setFillColor(warning_bg)
+    else:
+        c.setFillColor(box_bg)
 
-        content_y -= 15
-        c.setFont("Helvetica", 9)
-        c.drawString(left_margin + 15, content_y, "• Übergabe der Forderung an ein Inkassobüro")
-        content_y -= 12
-        c.drawString(left_margin + 15, content_y, "• Einleitung eines gerichtlichen Mahnverfahrens")
-        content_y -= 12
-        c.drawString(left_margin + 15, content_y, "• Geltendmachung von Verzugszinsen und Mahnkosten")
+    c.rect(left_margin, content_y - box_height, right_margin - left_margin - 60, box_height, stroke=0, fill=1)
 
-        content_y -= 15
-        c.setFont("Helvetica", 10)
-        c.drawString(left_margin, content_y, "Die dadurch entstehenden zusätzlichen Kosten gehen zu Ihren Lasten.")
+    if reminder_level == 2:
+        c.setFillColor(warning_color)
+    else:
+        c.setFillColor(primary_color)
 
-    # Closing
-    content_y -= 20
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(col1_x, content_y - 10, "Offener Gesamtbetrag:")
+    c.drawRightString(col3_x, content_y - 10, f"{total_amount:.2f} €")
+
+    content_y -= box_height + 15
+
+    # === BANKVERBINDUNG IN INFO-BOX ===
+    c.setFillColor(box_bg)
+    box_height = 35
+    c.rect(left_margin, content_y - box_height, right_margin - left_margin, box_height, stroke=0, fill=1)
+
+    c.setFillColor(primary_color)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(left_margin + 5, content_y - 10, "Unsere Bankverbindung:")
+
+    c.setFillColor(black)
+    c.setFont("Helvetica", 9)
+    c.drawString(left_margin + 5, content_y - 22, "Sparkasse Worms-Alzey-Ried")
+    c.drawString(left_margin + 5, content_y - 32, "IBAN: DE51 5535 0010 0033 7173 83  •  BIC: MALADE51WOR")
+
+    content_y -= box_height + 15
+
+    # === SCHLUSS ===
     c.setFont("Helvetica", 10)
     if reminder_level < 2:
-        c.drawString(left_margin, content_y, "Sofern Sie bereits bezahlt haben oder Unstimmigkeiten bestehen, bitten wir um")
-        content_y -= 12
-        c.drawString(left_margin, content_y, "umgehende Kontaktaufnahme.")
-        content_y -= 20
+        c.drawString(left_margin, content_y, "Für Rückfragen stehen wir Ihnen gerne zur Verfügung.")
+        content_y -= 15
+        c.drawString(left_margin, content_y, "Mit freundlichen Grüßen")
+    else:
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(left_margin, content_y, "Bitte überweisen Sie den Betrag umgehend, um weitere Maßnahmen zu vermeiden.")
+        content_y -= 15
+        c.setFont("Helvetica", 10)
+        c.drawString(left_margin, content_y, "Mit freundlichen Grüßen")
 
-    c.drawString(left_margin, content_y, "Mit freundlichen Grüßen")
     content_y -= 10
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(left_margin, content_y, "Matthias Blüm")
-    content_y -= 10
-    c.drawString(left_margin, content_y, "Apotheke am Damm")
+    c.setFillColor(primary_color)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(left_margin, content_y, "Ihr Team der Apotheke am Damm")
 
-    # Footer
-    draw_reminder_footer(c, left_margin, width, 80)
+    # === FOOTER ===
+    footer_y = 20*mm
+    draw_modern_footer(c, left_margin, right_margin, footer_y, include_bank_details=False)
 
-    # Page 2: Additional information
+    # === SEITE 2: ZUSÄTZLICHE INFORMATIONEN ===
     c.showPage()
 
     # Co-payment exemption notice (at top of page 2)
     info_y = height - 150
-    c.setFont("Helvetica-Bold", 10)
+    c.setFillColor(primary_color)
+    c.setFont("Helvetica-Bold", 11)
     c.drawString(left_margin, info_y, "Hinweis bei Zuzahlungsbefreiung:")
 
     info_y -= 15
-    text_width = width - left_margin - 25 * mm
+    text_width = right_margin - left_margin
+    c.setFillColor(black)
     text = ("Trotz Befreiung von der Rezeptgebühr ist der Rechnungsbetrag fällig, da das Rezept/die Rezepte vom Arzt als "
             "\"gebührenpflichtig\" gekennzeichnet wurde(n). Mit dieser Rechnung und einem Zahlungsnachweis erhalten Sie den "
             "Betrag von Ihrer Krankenkasse erstattet. Bitte reichen Sie uns ebenfalls eine Kopie des Befreiungsausweises ein. "
             "Für Rückfragen helfen wir Ihnen natürlich gerne weiter.")
-    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
+    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=9)
 
     # Title
     info_y -= 30
+    c.setFillColor(primary_color)
     c.setFont("Helvetica-Bold", 12)
     c.drawString(left_margin, info_y, "Weitere Informationen und Hinweise")
 
     info_y -= 25
 
     # Paragraph 1
+    c.setFillColor(black)
     text = "Sollten Sie den Betrag bereits überwiesen haben, betrachten Sie dieses Schreiben bitte als gegenstandslos. In diesem Fall bitten wir um Entschuldigung für die Unannehmlichkeiten."
-    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
+    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=9)
     info_y -= 12
 
     # Paragraph 2
     text = "Falls Sie Fragen zu den Rechnungspositionen haben oder in einer finanziellen Notlage sind, bitten wir Sie, sich umgehend mit uns in Verbindung zu setzen. Wir sind gerne bereit, mit Ihnen eine Ratenzahlungsvereinbarung zu treffen."
-    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
+    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=9)
     info_y -= 12
 
     # Paragraph 3
     text = "Bitte beachten Sie, dass bei Nichtzahlung weitere Kosten auf Sie zukommen können, einschließlich Zinsen, Anwaltskosten und Gerichtsgebühren. Diese können den ursprünglichen Rechnungsbetrag erheblich erhöhen."
-    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
+    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=9)
     info_y -= 12
 
     # Paragraph 4
     text = "Wir möchten Sie darauf hinweisen, dass ein gerichtliches Mahnverfahren auch negative Auswirkungen auf Ihre Bonität haben kann. Dies kann zukünftige Geschäftsbeziehungen und Kreditwürdigkeitsprüfungen beeinflussen."
-    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
+    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=9)
     info_y -= 12
 
     # Paragraph 5
     text = "Ihre Gesundheit liegt uns am Herzen, und wir möchten unsere gute Geschäftsbeziehung fortführen. Daher bitten wir Sie eindringlich, den offenen Betrag zu begleichen oder sich mit uns in Verbindung zu setzen, um eine Lösung zu finden."
-    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=10)
+    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=9)
 
     # Footer on page 2
-    draw_reminder_footer(c, left_margin, width, 80)
+    draw_modern_footer(c, left_margin, right_margin, 20*mm, include_bank_details=False)
 
     c.save()
     buffer.seek(0)
