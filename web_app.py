@@ -76,8 +76,24 @@ from letterxpress_client import LetterXpressClient
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_DB_PATH = BASE_DIR / "invoice_data.db"
-DEFAULT_INVOICE_ROOT = BASE_DIR / "Rechnungen"
+
+
+def get_data_dir() -> Path:
+    """
+    Get the data directory from environment variable DATA_DIR.
+    If not set, defaults to BASE_DIR (application directory).
+    Expands ~ to user home directory.
+    """
+    data_dir_env = os.getenv('DATA_DIR')
+    if data_dir_env:
+        # Expand ~ to home directory
+        expanded_path = Path(data_dir_env).expanduser()
+        return expanded_path
+    return BASE_DIR
+
+
+DEFAULT_DB_PATH = get_data_dir() / "invoice_data.db"
+DEFAULT_INVOICE_ROOT = get_data_dir() / "Rechnungen"
 DEFAULT_LIMIT = 1000
 
 ASCII_FALLBACK_MAP = str.maketrans({
@@ -2734,7 +2750,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
     @app.route("/sammelrechnungen")
     def sammelrechnungen() -> Response:
         """Display all collective invoices from the Sammelrechnungen folder."""
-        sammelrechnungen_dir = BASE_DIR / "Sammelrechnungen"
+        sammelrechnungen_dir = get_data_dir() / "Sammelrechnungen"
 
         # Fetch LetterXpress status, customer print_only flags, and rX selections from database
         letterxpress_status = {}
@@ -2823,7 +2839,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                         file_size_kb = stat.st_size / 1024
 
                         # Build relative path for PDF viewing
-                        relative_path = pdf_file.relative_to(BASE_DIR)
+                        relative_path = pdf_file.relative_to(get_data_dir())
 
                         # Get LetterXpress status for this file
                         lx_status = letterxpress_status.get(pdf_file.name, None)
@@ -3675,7 +3691,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
         try:
             # Create output folder for reminders
             current_month = datetime.now().strftime("%Y-%m")
-            reminders_folder = BASE_DIR / "Mahnungen" / current_month
+            reminders_folder = get_data_dir() / "Mahnungen" / current_month
             reminders_folder.mkdir(parents=True, exist_ok=True)
 
             created_pdfs = 0
@@ -3854,8 +3870,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     created_pdfs += 1
                     logging.info(f"Created reminder PDF with {invoices_added} invoice(s): {pdf_path}")
 
-                    # Calculate relative path from BASE_DIR
-                    relative_pdf_path = str(pdf_path.relative_to(BASE_DIR))
+                    # Calculate relative path from DATA_DIR
+                    relative_pdf_path = str(pdf_path.relative_to(get_data_dir()))
 
                     # Create database entries for all invoices in this group
                     for inv in invoice_list:
@@ -3922,7 +3938,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
             # Sanitize folder name to prevent path traversal
             folder_name = folder_name.replace("/", "-").replace("\\", "-").replace("..", "-")
 
-            output_folder = BASE_DIR / "Sammelrechnungen" / folder_name
+            output_folder = get_data_dir() / "Sammelrechnungen" / folder_name
             output_folder.mkdir(parents=True, exist_ok=True)
 
             # Get filters from request (for selecting which customers to process)
@@ -4146,7 +4162,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 "success": True,
                 "count": count,
                 "total_invoices": total_invoices,
-                "output_folder": str(output_folder.relative_to(BASE_DIR)),
+                "output_folder": str(output_folder.relative_to(get_data_dir())),
                 "output_folder_absolute": str(output_folder)
             })
 
@@ -4383,7 +4399,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
             if not month:
                 return jsonify({"success": False, "error": "Monat erforderlich"}), 400
 
-            sammelrechnungen_dir = BASE_DIR / "Sammelrechnungen" / month
+            sammelrechnungen_dir = get_data_dir() / "Sammelrechnungen" / month
 
             if not sammelrechnungen_dir.exists():
                 return jsonify({"success": False, "error": f"Verzeichnis für {month} nicht gefunden"}), 404
@@ -4404,7 +4420,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
             for row in rows:
                 pdf_path = sammelrechnungen_dir / row["filename"]
                 if pdf_path.exists():
-                    pdf_paths.append(str(pdf_path.relative_to(BASE_DIR)))
+                    pdf_paths.append(str(pdf_path.relative_to(get_data_dir())))
 
             if not pdf_paths:
                 return jsonify({"success": False, "error": "Keine PDF-Dateien gefunden"}), 404
@@ -4965,8 +4981,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
     @app.route("/pdf/<path:relative_path>")
     def serve_pdf(relative_path: str):
         # Allow serving PDFs from both Rechnungen and Sammelrechnungen folders
-        # Use BASE_DIR as root instead of INVOICE_ROOT
-        root = BASE_DIR.resolve()
+        # Use DATA_DIR as root (where the data folders are located)
+        root = get_data_dir().resolve()
         target = (root / relative_path).resolve()
         try:
             target.relative_to(root)

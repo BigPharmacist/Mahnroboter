@@ -40,8 +40,24 @@ except ImportError:  # pragma: no cover - optional dependency for --watch mode
     PollingObserver = None
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_INVOICE_DIR = BASE_DIR / "Rechnungen"
-DEFAULT_DB_PATH = BASE_DIR / "invoice_data.db"
+
+
+def get_data_dir() -> Path:
+    """
+    Get the data directory from environment variable DATA_DIR.
+    If not set, defaults to BASE_DIR (application directory).
+    Expands ~ to user home directory.
+    """
+    data_dir_env = os.getenv('DATA_DIR')
+    if data_dir_env:
+        # Expand ~ to home directory
+        expanded_path = Path(data_dir_env).expanduser()
+        return expanded_path
+    return BASE_DIR
+
+
+DEFAULT_INVOICE_DIR = get_data_dir() / "Rechnungen"
+DEFAULT_DB_PATH = get_data_dir() / "invoice_data.db"
 
 CUSTOMER_MARKERS = {"Herr", "Herrn", "Frau", "Familie"}
 DATE_PATTERN = re.compile(r"(?:Datum:\s*(\d{2}\.\d{2}\.\d{4})|(\d{2}\.\d{2}\.\d{4})\s*Datum:)")
