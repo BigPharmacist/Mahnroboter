@@ -50,6 +50,16 @@
   {% endif %}
 </section>
 
+<!-- Search bar -->
+<section class="search-section">
+  <div class="search-wrapper">
+    <input type="text" id="customerSearch" class="search-input" placeholder="Kunde suchen..." oninput="filterCustomers(this.value)">
+    <span class="search-icon">🔍</span>
+    <button type="button" class="search-clear" onclick="clearSearch()" title="Suche löschen">×</button>
+  </div>
+  <span class="search-results" id="searchResults"></span>
+</section>
+
 <!-- Filter buttons -->
 <section class="filter-controls">
   <div class="collapse-controls">
@@ -695,6 +705,37 @@ function updateToggleAllButton() {
   }
 }
 
+function filterCustomers(searchTerm) {
+  const groups = document.querySelectorAll('.customer-group');
+  const resultsEl = document.getElementById('searchResults');
+  const term = searchTerm.toLowerCase().trim();
+
+  if (!term) {
+    groups.forEach(group => group.classList.remove('search-hidden'));
+    resultsEl.textContent = '';
+    return;
+  }
+
+  let visibleCount = 0;
+  groups.forEach(group => {
+    const name = group.querySelector('.customer-info h3')?.textContent.toLowerCase() || '';
+    const address = group.querySelector('.customer-info small')?.textContent.toLowerCase() || '';
+    const matches = name.includes(term) || address.includes(term);
+
+    group.classList.toggle('search-hidden', !matches);
+    if (matches) visibleCount++;
+  });
+
+  resultsEl.textContent = `${visibleCount} von ${groups.length} Kunden`;
+}
+
+function clearSearch() {
+  const input = document.getElementById('customerSearch');
+  input.value = '';
+  filterCustomers('');
+  input.focus();
+}
+
 function createAllRecommendedReminders() {
   // Find all checkboxes with data-level="0" (Zahlungserinnerung recommendations)
   const checkboxes = document.querySelectorAll('.invoice-checkbox[data-level="0"]');
@@ -1208,34 +1249,102 @@ const showUncollectibleInvoices = {{ 'true' if show_uncollectible else 'false' }
 }
 
 .stats-summary {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 0.75rem;
-  margin: 1rem 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+  justify-content: flex-start;
 }
 
 .stat-card {
   background: white;
-  padding: 0.75rem;
-  border-radius: 6px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-  text-align: center;
+  padding: 0.4rem 0.75rem;
+  border-radius: 4px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.08);
   display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 0.4rem;
 }
 
 .stat-label {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   color: #666;
-  line-height: 1.3;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .stat-value {
-  font-size: 1.5rem;
+  font-size: 0.95rem;
   font-weight: 700;
   color: #123C69;
   line-height: 1;
+}
+
+.search-section {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.5rem 0;
+}
+
+.search-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.search-input {
+  padding: 0.4rem 2rem 0.4rem 1.75rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  width: 220px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: #123C69;
+  box-shadow: 0 0 0 2px rgba(18, 60, 105, 0.1);
+}
+
+.search-icon {
+  position: absolute;
+  left: 0.5rem;
+  font-size: 0.75rem;
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.search-clear {
+  position: absolute;
+  right: 0.4rem;
+  background: none;
+  border: none;
+  font-size: 1rem;
+  color: #999;
+  cursor: pointer;
+  padding: 0 0.25rem;
+  line-height: 1;
+  display: none;
+}
+
+.search-clear:hover {
+  color: #666;
+}
+
+.search-input:not(:placeholder-shown) + .search-icon + .search-clear {
+  display: block;
+}
+
+.search-results {
+  font-size: 0.75rem;
+  color: #666;
+}
+
+.customer-group.search-hidden {
+  display: none;
 }
 
 .customers-container {

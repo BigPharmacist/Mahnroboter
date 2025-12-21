@@ -2896,6 +2896,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
         status_filter = request.args.get("status", "open")  # 'all', 'open', or 'paid'
         email_filter = request.args.get("email", "all")  # 'all', 'with_email', or 'without_email'
         uncollectible_filter = request.args.get("uncollectible", "hide")  # 'hide', 'show', or 'only'
+        collective_filter = request.args.get("collective", "all")  # 'all', 'in', or 'not_in'
 
         # Invoice date range filter (format: YYYY-MM-DD)
         invoice_date_from = request.args.get("invoice_date_from", "")
@@ -2920,6 +2921,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
             to_month,
             email_filter,
             uncollectible_filter,
+            collective_filter,
             sort_by,
             sort_direction,
             invoice_date_from=invoice_date_from,
@@ -2959,6 +2961,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 status_filter=status_filter,
                 email_filter=email_filter,
                 uncollectible_filter=uncollectible_filter,
+                collective_filter=collective_filter,
                 invoice_date_from=invoice_date_from,
                 invoice_date_to=invoice_date_to,
                 from_month=from_month,
@@ -2982,6 +2985,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 status_filter=status_filter,
                 email_filter=email_filter,
                 uncollectible_filter=uncollectible_filter,
+                collective_filter=collective_filter,
                 invoice_date_from=invoice_date_from,
                 invoice_date_to=invoice_date_to,
                 from_month=from_month,
@@ -3142,6 +3146,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
         status_filter = request.args.get("status", "open")
         email_filter = request.args.get("email", "all")
         uncollectible_filter = request.args.get("uncollectible", "hide")
+        collective_filter = request.args.get("collective", "all")
         invoice_date_from = request.args.get("invoice_date_from", "")
         invoice_date_to = request.args.get("invoice_date_to", "")
         from_month = request.args.get("from_month", "")
@@ -3160,6 +3165,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
             to_month,
             email_filter,
             uncollectible_filter,
+            collective_filter,
             sort_by,
             sort_direction,
             invoice_date_from=invoice_date_from,
@@ -3566,12 +3572,13 @@ def create_app(config: Optional[dict] = None) -> Flask:
         status_filter = request.args.get("status", "open")
         email_filter = request.args.get("email", "all")
         uncollectible_filter = request.args.get("uncollectible", "hide")
+        collective_filter = request.args.get("collective", "all")
         invoice_date_from = request.args.get("invoice_date_from", "")
         invoice_date_to = request.args.get("invoice_date_to", "")
         from_month = request.args.get("from_month", "")
         to_month = request.args.get("to_month", "")
 
-        invoices = fetch_invoices(app.config["DATABASE"], query, limit, time_filter, status_filter, from_month, to_month, email_filter, uncollectible_filter, invoice_date_from=invoice_date_from, invoice_date_to=invoice_date_to)
+        invoices = fetch_invoices(app.config["DATABASE"], query, limit, time_filter, status_filter, from_month, to_month, email_filter, uncollectible_filter, collective_filter, invoice_date_from=invoice_date_from, invoice_date_to=invoice_date_to)
 
         if not invoices:
             return jsonify({"error": "Keine Rechnungen zum Drucken gefunden"}), 404
@@ -3628,6 +3635,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
         status_filter = request.args.get("status", "open")
         email_filter = request.args.get("email", "all")
         uncollectible_filter = request.args.get("uncollectible", "hide")
+        collective_filter = request.args.get("collective", "all")
         invoice_date_from = request.args.get("invoice_date_from", "")
         invoice_date_to = request.args.get("invoice_date_to", "")
         from_month = request.args.get("from_month", "")
@@ -3635,7 +3643,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
         def generate():
             try:
-                invoices = fetch_invoices(app.config["DATABASE"], query, limit, time_filter, status_filter, from_month, to_month, email_filter, uncollectible_filter, invoice_date_from=invoice_date_from, invoice_date_to=invoice_date_to)
+                invoices = fetch_invoices(app.config["DATABASE"], query, limit, time_filter, status_filter, from_month, to_month, email_filter, uncollectible_filter, collective_filter, invoice_date_from=invoice_date_from, invoice_date_to=invoice_date_to)
 
                 if not invoices:
                     yield f"data: {json.dumps({'type': 'error', 'message': 'Keine Rechnungen zum Versenden gefunden'})}\n\n"
@@ -4202,6 +4210,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
             to_month = request.args.get("to_month", "")
             email_filter = request.args.get("email", "all")
             uncollectible_filter = request.args.get("uncollectible", "hide")
+            collective_filter = request.args.get("collective", "all")
             invoice_date_from = request.args.get("invoice_date_from", "")
             invoice_date_to = request.args.get("invoice_date_to", "")
             include_sepa = request.args.get("include_sepa", "false").lower() == "true"
@@ -4223,6 +4232,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 to_month,
                 email_filter,
                 uncollectible_filter,
+                collective_filter,
                 invoice_date_from=invoice_date_from,
                 invoice_date_to=invoice_date_to
             )
@@ -5472,6 +5482,7 @@ def fetch_invoices(
     to_month: str = "",
     email_filter: str = "all",
     uncollectible_filter: str = "hide",
+    collective_filter: str = "all",
     sort_by: str = "date",
     sort_direction: str = "desc",
     invoice_date_from: str = "",
@@ -5494,6 +5505,11 @@ def fetch_invoices(
     - 'hide': Hide uncollectible invoices (default)
     - 'show': Show uncollectible invoices
     - 'only': Show only uncollectible invoices
+
+    Collective invoice filter (Sammelrechnung):
+    - 'all': Show all invoices
+    - 'in': Show only invoices in a collective invoice
+    - 'not_in': Show only invoices not in a collective invoice
 
     Invoice date range filter (Rechnungsdatum):
     - invoice_date_from: Start date in YYYY-MM-DD format
@@ -5610,6 +5626,13 @@ def fetch_invoices(
         elif uncollectible_filter == "only":
             sql += " AND ist.uncollectible = 1"
         # If uncollectible_filter == "show", don't add any filter (show all)
+
+        # Apply collective invoice filter
+        if collective_filter == "in":
+            sql += " AND EXISTS (SELECT 1 FROM collective_invoice_items cii WHERE cii.invoice_id = ist.id)"
+        elif collective_filter == "not_in":
+            sql += " AND NOT EXISTS (SELECT 1 FROM collective_invoice_items cii WHERE cii.invoice_id = ist.id)"
+        # If collective_filter == "all", don't add any filter (show all)
 
         # Apply search filter
         if query:
