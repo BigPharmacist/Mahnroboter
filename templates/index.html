@@ -204,22 +204,38 @@
         </div>
       </div>
     </div>
-    <div class="action-buttons-container">
-      <div class="action-buttons-grid">
-        <button id="print-button" class="print-button action-btn">&#x1F5A8; Rechnungen drucken ({{ invoices|length }})</button>
-        <button id="email-button" class="email-button action-btn">&#x2709; Rechnungen per E-Mail versenden ({{ invoices|length }})</button>
-        <button id="collective-button" class="collective-button action-btn">&#x1F4C4; Sammelrechnungen erzeugen</button>
-        <a href="{{ url_for('index', q=query, limit=limit, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, uncollectible=uncollectible_filter, collective=collective_filter, invoice_date_from=invoice_date_from, invoice_date_to=invoice_date_to, grouped='false' if grouped else 'true', sort=sort_by, direction=sort_direction) }}" class="toggle-button action-btn">
-          {% if grouped %}
-          &#x1F4CB; Normale Ansicht
-          {% else %}
-          &#x1F465; Nach Empfänger gruppieren
-          {% endif %}
-        </a>
+    <div class="action-buttons-container" style="display: flex; gap: 1rem; align-items: flex-start;">
+      <div style="flex: 1;">
+        <div class="action-buttons-grid">
+          <button id="print-button" class="print-button action-btn">&#x1F5A8; Rechnungen drucken ({{ invoices|length }})</button>
+          <button id="email-button" class="email-button action-btn">&#x2709; Rechnungen per E-Mail versenden ({{ invoices|length }})</button>
+          <button id="collective-button" class="collective-button action-btn">&#x1F4C4; Sammelrechnungen erzeugen</button>
+          <a href="{{ url_for('index', q=query, limit=limit, time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, uncollectible=uncollectible_filter, collective=collective_filter, invoice_date_from=invoice_date_from, invoice_date_to=invoice_date_to, grouped='false' if grouped else 'true', sort=sort_by, direction=sort_direction) }}" class="toggle-button action-btn">
+            {% if grouped %}
+            &#x1F4CB; Normale Ansicht
+            {% else %}
+            &#x1F465; Nach Empfänger gruppieren
+            {% endif %}
+          </a>
+        </div>
+        <div class="action-status">
+          <span id="email-status" class="email-status"></span>
+          <span id="collective-status" class="collective-status"></span>
+        </div>
       </div>
-      <div class="action-status">
-        <span id="email-status" class="email-status"></span>
-        <span id="collective-status" class="collective-status"></span>
+      <!-- Formular-Info-Box -->
+      <div id="form-usage-info" class="form-usage-info-box" style="background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 0.75rem 1rem; min-width: 220px; font-size: 0.85rem;">
+        <div style="font-weight: 600; margin-bottom: 0.5rem; color: #495057;">Formulare hinzugefuegt:</div>
+        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+          <div>
+            <div style="color: #666; font-size: 0.8rem;">E-Mail-Formular:</div>
+            <div id="email-form-usage" style="font-weight: 500; color: #1976d2; padding-left: 0.5rem;">-</div>
+          </div>
+          <div>
+            <div style="color: #666; font-size: 0.8rem;">SEPA-Mandat:</div>
+            <div id="sepa-form-usage" style="font-weight: 500; color: #1976d2; padding-left: 0.5rem;">-</div>
+          </div>
+        </div>
       </div>
     </div>
   </section>
@@ -544,7 +560,40 @@
           updateDateInputUI(this);
         });
       });
+
+      // Load form usage history for info box
+      loadFormUsageHistory();
     });
+
+    // Load form usage history and update info box
+    async function loadFormUsageHistory() {
+      try {
+        const response = await fetch('/api/form-usage-history');
+        const data = await response.json();
+        if (data.success && data.data) {
+          const emailEl = document.getElementById('email-form-usage');
+          const sepaEl = document.getElementById('sepa-form-usage');
+
+          if (data.data.email_consent && data.data.email_consent.history) {
+            const months = data.data.email_consent.history.map(h => h.usage_month);
+            emailEl.textContent = months.join(', ');
+          } else {
+            emailEl.textContent = 'noch nie';
+            emailEl.style.color = '#999';
+          }
+
+          if (data.data.sepa_mandate && data.data.sepa_mandate.history) {
+            const months = data.data.sepa_mandate.history.map(h => h.usage_month);
+            sepaEl.textContent = months.join(', ');
+          } else {
+            sepaEl.textContent = 'noch nie';
+            sepaEl.style.color = '#999';
+          }
+        }
+      } catch (e) {
+        console.error('Error loading form usage history:', e);
+      }
+    }
 
     // Reset filters to defaults
     function resetFilters() {
@@ -813,6 +862,29 @@
       olderCountEl.style.display = 'none';
       olderCountEl.textContent = '';
       collectiveSettings.candidates = {};
+
+      // Load and display form usage history
+      const sepaLastUsageEl = document.getElementById('sepa-last-usage');
+      const emailLastUsageEl = document.getElementById('email-last-usage');
+      sepaLastUsageEl.style.display = 'none';
+      emailLastUsageEl.style.display = 'none';
+
+      try {
+        const historyResponse = await fetch('/api/form-usage-history');
+        const historyData = await historyResponse.json();
+        if (historyData.success && historyData.data) {
+          if (historyData.data.sepa_mandate) {
+            sepaLastUsageEl.textContent = 'Zuletzt hinzugefuegt: ' + historyData.data.sepa_mandate.last_usage_month;
+            sepaLastUsageEl.style.display = 'block';
+          }
+          if (historyData.data.email_consent) {
+            emailLastUsageEl.textContent = 'Zuletzt hinzugefuegt: ' + historyData.data.email_consent.last_usage_month;
+            emailLastUsageEl.style.display = 'block';
+          }
+        }
+      } catch (e) {
+        console.error('Error loading form usage history:', e);
+      }
 
       // Show modal
       modal.classList.add('show');
@@ -1454,6 +1526,7 @@
             <div>
               <span style="font-weight: 500;">SEPA-Lastschriftmandat beifügen</span>
               <p style="margin: 0.25rem 0 0 0; font-size: 0.85rem; color: #666;">Wird automatisch übersprungen für Kunden mit aktiviertem Bankeinzug</p>
+              <p id="sepa-last-usage" style="margin: 0.25rem 0 0 0; font-size: 0.8rem; color: #1976d2; font-style: italic; display: none;"></p>
             </div>
           </label>
         </div>
@@ -1463,6 +1536,7 @@
             <div>
               <span style="font-weight: 500;">E-Mail-Einwilligungsformular beifügen</span>
               <p style="margin: 0.25rem 0 0 0; font-size: 0.85rem; color: #666;">Kundenname wird automatisch eingetragen</p>
+              <p id="email-last-usage" style="margin: 0.25rem 0 0 0; font-size: 0.8rem; color: #1976d2; font-style: italic; display: none;"></p>
             </div>
           </label>
         </div>

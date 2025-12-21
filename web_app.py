@@ -4467,6 +4467,30 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     total_invoices += current_month_count
                     logging.info(f"Created collective invoice for {customer_name}: {output_path} ({current_month_count} invoices)")
 
+            # Track form usage if any forms were added
+            if count > 0:
+                if include_sepa:
+                    conn.execute(
+                        """
+                        INSERT INTO form_usage_history (form_type, usage_month)
+                        VALUES ('sepa_mandate', ?)
+                        """,
+                        (folder_name,)
+                    )
+                    logging.info(f"SEPA-Formular-Nutzung protokolliert: {folder_name}")
+
+                if include_email_consent:
+                    conn.execute(
+                        """
+                        INSERT INTO form_usage_history (form_type, usage_month)
+                        VALUES ('email_consent', ?)
+                        """,
+                        (folder_name,)
+                    )
+                    logging.info(f"Email-Formular-Nutzung protokolliert: {folder_name}")
+
+                conn.commit()
+
             return jsonify({
                 "success": True,
                 "count": count,
@@ -4477,6 +4501,46 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
         except Exception as e:
             logging.error(f"Error generating collective invoices: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/api/form-usage-history", methods=["GET"])
+    def get_form_usage_history() -> Response:
+        """Get the last 2 usage months for each form type (email_consent, sepa_mandate)."""
+        try:
+            with sqlite3.connect(app.config["DATABASE"]) as conn:
+                conn.row_factory = sqlite3.Row
+                init_db(conn)
+
+                # Get the 2 most recent usages for each form type
+                result = {}
+                for form_type in ['email_consent', 'sepa_mandate']:
+                    rows = conn.execute(
+                        """
+                        SELECT usage_month, created_at
+                        FROM form_usage_history
+                        WHERE form_type = ?
+                        ORDER BY created_at DESC
+                        LIMIT 2
+                        """,
+                        (form_type,)
+                    ).fetchall()
+
+                    if rows:
+                        result[form_type] = {
+                            "history": [
+                                {"usage_month": row["usage_month"], "created_at": row["created_at"]}
+                                for row in rows
+                            ],
+                            "last_usage_month": rows[0]["usage_month"],
+                            "last_usage_date": rows[0]["created_at"]
+                        }
+                    else:
+                        result[form_type] = None
+
+                return jsonify({"success": True, "data": result})
+
+        except Exception as e:
+            logging.error(f"Error getting form usage history: {e}")
             return jsonify({"success": False, "error": str(e)}), 500
 
     @app.route("/api/collective-invoice-candidates", methods=["GET"])

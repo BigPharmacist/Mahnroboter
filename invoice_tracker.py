@@ -425,6 +425,30 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
 
+    # Create form_usage_history table for tracking when forms were added to collective invoices
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS form_usage_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            form_type TEXT NOT NULL CHECK(form_type IN ('email_consent', 'sepa_mandate')),
+            usage_month TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+        )
+        """
+    )
+
+    # Insert initial data for email_consent form (11-2025) if table is empty
+    existing_email = conn.execute(
+        "SELECT COUNT(*) FROM form_usage_history WHERE form_type = 'email_consent'"
+    ).fetchone()[0]
+    if existing_email == 0:
+        conn.execute(
+            """
+            INSERT INTO form_usage_history (form_type, usage_month, created_at)
+            VALUES ('email_consent', '2025-11', '2025-11-01 00:00:00')
+            """
+        )
+
     conn.commit()
 
 
