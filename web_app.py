@@ -13,7 +13,7 @@ import argparse
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Iterable, List, Optional, Dict, Tuple, Any
 from collections import defaultdict
@@ -34,6 +34,7 @@ from flask import (
     Response,
     abort,
     jsonify,
+    make_response,
     redirect,
     render_template,
     request,
@@ -721,12 +722,10 @@ def draw_modern_footer(c, left_margin, right_margin, footer_y, include_bank_deta
         c.drawString(col3_x, y, "Sparkasse Worms-Alzey-Ried")
 
         y -= 3.5*mm
-        c.setFont("Helvetica", 6.5)
-        c.drawString(col3_x, y, "IBAN: DE51 5535 0010")
-        y -= 2.5*mm
-        c.drawString(col3_x, y, "0033 7173 83")
+        c.setFont("Helvetica", 6)
+        c.drawString(col3_x, y, "IBAN: DE51 5535 0010 0033 7173 83")
 
-        y -= 3.5*mm
+        y -= 3*mm
         c.drawString(col3_x, y, "BIC: MALADE51WOR")
     else:
         # Bei Mahnungen: Rechtliches
@@ -1550,6 +1549,253 @@ def create_sepa_mandate_pdf(
     # Unterschrift
     c.line(140*mm, y_pos, 190*mm, y_pos)
     c.drawString(140*mm, y_pos - 3*mm, "Unterschrift(en)")
+
+    c.save()
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def create_invoice_history_pdf(
+    customer_name: str,
+    customer_street: str,
+    customer_city: str,
+    invoice_number: str,
+    invoice_date: str,
+    amount_eur: float,
+    events: list
+) -> bytes:
+    """
+    Create a printable PDF of the invoice history/timeline.
+
+    Args:
+        customer_name: Name of the customer
+        customer_street: Street address of the customer
+        customer_city: City (PLZ + Ort) of the customer
+        invoice_number: Invoice number
+        invoice_date: Invoice date string
+        amount_eur: Invoice amount in EUR
+        events: List of event dicts with event_type, timestamp, metadata
+
+    Returns:
+        PDF bytes
+    """
+    from reportlab.lib.colors import HexColor
+
+    # Apotheken-Daten
+    APOTHEKE_NAME = "Apotheke am Damm"
+    APOTHEKE_STRASSE = "Am Damm 17"
+    APOTHEKE_PLZ_ORT = "55232 Alzey"
+    APOTHEKE_TELEFON = "06731-548846"
+    APOTHEKE_EMAIL = "info@apothekeamdamm.de"
+
+    # Event type translations and explanations
+    event_translations = {
+        'IMPORT': ('Import', 'Rechnung wurde aus Importdatei eingelesen'),
+        'EMAIL_SENT': ('E-Mail versendet', 'Rechnung wurde per E-Mail an Kunden gesendet'),
+        'COLLECTIVE_INVOICE_CREATED': ('Sammelrechnung erstellt', 'Rechnung wurde in Sammelrechnung aufgenommen'),
+        'COLLECTIVE_INVOICE_SENT': ('Sammelrechnung versendet', 'Sammelrechnung wurde an Versanddienstleister uebertragen'),
+        'REMINDER_CREATED': ('Mahnung erstellt', 'Mahnschreiben wurde als PDF erstellt'),
+        'REMINDER_SENT': ('Mahnung versendet', 'Mahnschreiben wurde an Versanddienstleister uebertragen'),
+        'MARKED_UNCOLLECTIBLE': ('Als uneinbringbar markiert', 'Rechnung wurde als uneinbringbar gekennzeichnet'),
+        'UNMARKED_UNCOLLECTIBLE': ('Uneinbringbar-Status aufgehoben', 'Uneinbringbar-Markierung wurde entfernt')
+    }
+
+    reminder_level_names = {
+        0: 'Zahlungserinnerung',
+        1: '1. Mahnung',
+        2: '2. Mahnung'
+    }
+
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+
+    # Farben
+    primary_color = HexColor("#123C69")
+    black = HexColor("#000000")
+    gray = HexColor("#666666")
+    light_gray = HexColor("#f5f5f5")
+    green = HexColor("#4CAF50")
+
+    # Startposition oben
+    y_pos = height - 25*mm
+
+    # ===== KOPFBEREICH =====
+    c.setFillColor(primary_color)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(20*mm, y_pos, APOTHEKE_NAME)
+
+    y_pos -= 6*mm
+    c.setFillColor(black)
+    c.setFont("Helvetica", 9)
+    c.drawString(20*mm, y_pos, f"{APOTHEKE_STRASSE} | {APOTHEKE_PLZ_ORT}")
+
+    y_pos -= 18*mm
+
+    # ===== UEBERSCHRIFT =====
+    c.setFillColor(primary_color)
+    c.setFont("Helvetica-Bold", 14)
+    c.drawCentredString(width/2, y_pos, "Rechnungs-Verlauf")
+
+    y_pos -= 15*mm
+
+    # ===== RECHNUNGS-INFO BOX =====
+    box_height = 32*mm
+    c.setFillColor(light_gray)
+    c.rect(20*mm, y_pos - box_height + 5*mm, 170*mm, box_height, stroke=0, fill=1)
+
+    info_y = y_pos
+    c.setFillColor(black)
+
+    # Zeile 1: Rechnungsnummer (prominent)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(25*mm, info_y, f"Rechnungsnr.: {invoice_number or '-'}")
+
+    # Rechte Spalte: Datum und Betrag
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(130*mm, info_y, "Datum:")
+    c.drawString(130*mm, info_y - 5*mm, "Betrag:")
+    c.setFont("Helvetica", 9)
+    c.drawString(150*mm, info_y, invoice_date or "-")
+    c.drawString(150*mm, info_y - 5*mm, f"{amount_eur:.2f} EUR")
+
+    # Zeile 2-4: Rechnungsempfaenger mit Anschrift
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(25*mm, info_y - 8*mm, "Rechnungsempfaenger:")
+    c.setFont("Helvetica", 9)
+    c.drawString(25*mm, info_y - 13*mm, customer_name or "-")
+    if customer_street:
+        c.drawString(25*mm, info_y - 18*mm, customer_street)
+    if customer_city:
+        c.drawString(25*mm, info_y - 23*mm, customer_city)
+
+    y_pos -= box_height + 10*mm
+
+    # ===== VERLAUF-UEBERSCHRIFT =====
+    c.setFillColor(primary_color)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(20*mm, y_pos, "Chronologischer Verlauf")
+
+    y_pos -= 10*mm
+
+    # ===== TIMELINE (kompaktes, modernes Design) =====
+    if not events:
+        c.setFillColor(gray)
+        c.setFont("Helvetica-Oblique", 9)
+        c.drawString(25*mm, y_pos, "Noch keine Ereignisse fuer diese Rechnung.")
+    else:
+        # Sortiere Events chronologisch (aelteste zuerst fuer Druck)
+        sorted_events = sorted(events, key=lambda e: e.get('timestamp', ''))
+
+        # Timeline-Konstanten
+        dot_x = 22*mm
+        dot_radius = 2*mm
+        content_x = 28*mm
+        line_height = 12*mm  # Kompakter Abstand zwischen Events
+
+        for i, event in enumerate(sorted_events):
+            event_type = event.get('event_type', '')
+            timestamp = event.get('timestamp', '')
+            metadata = event.get('metadata', {})
+
+            # Format timestamp
+            try:
+                from datetime import datetime
+                dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                formatted_time = dt.strftime('%d.%m.%Y, %H:%M')
+            except:
+                formatted_time = timestamp
+
+            # Get translation and explanation
+            translation, explanation = event_translations.get(event_type, (event_type, ''))
+
+            # Check if we need a new page
+            if y_pos < 40*mm:
+                c.showPage()
+                y_pos = height - 25*mm
+                c.setFillColor(primary_color)
+                c.setFont("Helvetica-Bold", 12)
+                c.drawString(20*mm, y_pos, "Rechnungs-Verlauf (Fortsetzung)")
+                y_pos -= 12*mm
+
+            # Draw timeline line FIRST (unter dem Dot, für saubere Optik)
+            if i < len(sorted_events) - 1:
+                c.setStrokeColor(HexColor("#e0e0e0"))
+                c.setLineWidth(1.5)
+                c.line(dot_x, y_pos - dot_radius - 1*mm, dot_x, y_pos - line_height + dot_radius + 1*mm)
+
+            # Draw timeline dot (kleiner, mit Outline für modernen Look)
+            c.setStrokeColor(HexColor("#3d8c40"))
+            c.setFillColor(green)
+            c.setLineWidth(1.5)
+            c.circle(dot_x, y_pos, dot_radius, stroke=1, fill=1)
+
+            # Erste Zeile: Event-Name + Timestamp (horizontal, kompakt)
+            c.setFillColor(black)
+            c.setFont("Helvetica-Bold", 9)
+            c.drawString(content_x, y_pos + 1*mm, translation)
+
+            # Timestamp direkt nach dem Event-Namen
+            name_width = c.stringWidth(translation, "Helvetica-Bold", 9)
+            c.setFillColor(HexColor("#888888"))
+            c.setFont("Helvetica", 8)
+            c.drawString(content_x + name_width + 3*mm, y_pos + 1*mm, f"({formatted_time})")
+
+            # Metadata details als zweite Zeile (falls vorhanden)
+            details = []
+            if metadata.get('email'):
+                details.append(f"E-Mail: {metadata['email']}")
+            if metadata.get('letterxpress_job_id'):
+                details.append(f"LetterXpress Job: #{metadata['letterxpress_job_id']}")
+            if metadata.get('price') is not None:
+                details.append(f"Kosten: {metadata['price']:.2f} EUR")
+            if metadata.get('reminder_level') is not None:
+                level_name = reminder_level_names.get(metadata['reminder_level'], str(metadata['reminder_level']))
+                details.append(f"Stufe: {level_name}")
+
+            # Dateiname separat (kann lang sein)
+            filename = metadata.get('filename')
+
+            extra_lines = 0
+            if details:
+                c.setFillColor(HexColor("#666666"))
+                c.setFont("Helvetica", 7)
+                c.drawString(content_x, y_pos - 4*mm, " · ".join(details))
+                extra_lines += 1
+
+            if filename:
+                c.setFillColor(HexColor("#666666"))
+                c.setFont("Helvetica", 7)
+                c.drawString(content_x, y_pos - 4*mm - (extra_lines * 3.5*mm), f"Datei: {filename}")
+                extra_lines += 1
+
+            y_pos -= line_height + (extra_lines - 1) * 3.5*mm if extra_lines > 1 else line_height
+
+    # ===== FUSSBEREICH (feste Position am unteren Rand) =====
+    footer_y = 15*mm
+
+    # Trennlinie
+    c.setStrokeColor(HexColor("#cccccc"))
+    c.setDash(2, 2)
+    c.line(20*mm, footer_y + 8*mm, width - 20*mm, footer_y + 8*mm)
+    c.setDash()
+    c.setStrokeColor(black)
+
+    # Fusszeile
+    c.setFillColor(primary_color)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(20*mm, footer_y, APOTHEKE_NAME)
+
+    c.setFillColor(black)
+    c.setFont("Helvetica", 8)
+    footer_text = f"{APOTHEKE_STRASSE}, {APOTHEKE_PLZ_ORT}  |  Tel: {APOTHEKE_TELEFON}  |  {APOTHEKE_EMAIL}"
+    c.drawString(65*mm, footer_y, footer_text)
+
+    # Druckdatum rechts unten
+    c.setFillColor(gray)
+    c.setFont("Helvetica", 7)
+    from datetime import datetime
+    c.drawRightString(190*mm, footer_y - 5*mm, f"Erstellt am {datetime.now().strftime('%d.%m.%Y, %H:%M')}")
 
     c.save()
     buffer.seek(0)
@@ -2833,6 +3079,9 @@ def create_app(config: Optional[dict] = None) -> Flask:
                         else:
                             customer_name = filename  # Fallback to full filename
 
+                        # Normalize Unicode (macOS uses NFD, database uses NFC)
+                        customer_name = unicodedata.normalize('NFC', customer_name)
+
                         # Get file stats
                         stat = pdf_file.stat()
                         created_at = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
@@ -2841,14 +3090,17 @@ def create_app(config: Optional[dict] = None) -> Flask:
                         # Build relative path for PDF viewing
                         relative_path = pdf_file.relative_to(get_data_dir())
 
+                        # Normalize filename for dictionary lookups (macOS NFD vs DB NFC)
+                        normalized_filename = unicodedata.normalize('NFC', pdf_file.name)
+
                         # Get LetterXpress status for this file
-                        lx_status = letterxpress_status.get(pdf_file.name, None)
+                        lx_status = letterxpress_status.get(normalized_filename, None)
 
                         # Check if customer has print_only flag
                         is_print_only = customer_print_only.get(customer_name, False)
 
                         # Check if rX is selected for this invoice
-                        is_rx_selected = rx_selections.get((pdf_file.name, month), False)
+                        is_rx_selected = rx_selections.get((normalized_filename, month), False)
 
                         collective_invoices.append({
                             "month": month,
@@ -3955,6 +4207,11 @@ def create_app(config: Optional[dict] = None) -> Flask:
             include_sepa = request.args.get("include_sepa", "false").lower() == "true"
             include_email_consent = request.args.get("include_email_consent", "false").lower() == "true"
 
+            # Get additional invoices from request body (selected by user from candidates modal)
+            # Format: { "customer_name": [invoice_id1, invoice_id2, ...], ... }
+            request_data = request.get_json(silent=True) or {}
+            additional_invoices_by_customer = request_data.get("additional_invoices", {})
+
             # First, get invoices based on user filters to determine which customers to process
             filtered_invoices = fetch_invoices(
                 app.config["DATABASE"],
@@ -4025,6 +4282,48 @@ def create_app(config: Optional[dict] = None) -> Flask:
                             current_month_invoices.append(inv)
                         else:
                             older_invoices.append(inv)
+
+                    # Add additional invoices selected by user (from candidates modal)
+                    additional_ids = additional_invoices_by_customer.get(customer_name, [])
+                    if additional_ids:
+                        # Load additional invoices from database
+                        placeholders = ",".join("?" * len(additional_ids))
+                        additional_rows = conn.execute(
+                            f"""
+                            SELECT
+                                i.id, i.customer_name, i.invoice_number, i.invoice_date,
+                                CAST(i.amount_cents AS REAL) / 100.0 as amount_eur,
+                                'open' as status, i.customer_address,
+                                isna.file_path
+                            FROM invoices i
+                            LEFT JOIN invoice_snapshots isna ON i.id = isna.invoice_id
+                            WHERE i.id IN ({placeholders})
+                            GROUP BY i.id
+                            """,
+                            additional_ids
+                        ).fetchall()
+
+                        for row in additional_rows:
+                            # Create InvoiceRow object for additional invoice
+                            additional_inv = InvoiceRow(
+                                id=row["id"],
+                                customer_name=row["customer_name"],
+                                invoice_number=row["invoice_number"],
+                                invoice_date=row["invoice_date"],
+                                amount_cents=int(row["amount_eur"] * 100),
+                                status=row["status"],
+                                customer_address=row["customer_address"] or "",
+                                file_path=row["file_path"],
+                                last_seen_snapshot="",
+                                first_seen_snapshot="",
+                                in_collective_invoice=False
+                            )
+                            # Only add if not already in current_month_invoices (prevent duplicates)
+                            existing_ids = {inv.id for inv in current_month_invoices}
+                            if additional_inv.id not in existing_ids:
+                                current_month_invoices.append(additional_inv)
+                            # Remove from older_invoices if present
+                            older_invoices = [inv for inv in older_invoices if inv.id != additional_inv.id]
 
                     # Get customer salutation, address, and bank debit status
                     customer_row = conn.execute(
@@ -4168,6 +4467,84 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
         except Exception as e:
             logging.error(f"Error generating collective invoices: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/api/collective-invoice-candidates", methods=["GET"])
+    def get_collective_invoice_candidates() -> Response:
+        """Get ALL open invoices from the last 8 weeks that are not yet in a collective invoice.
+
+        Returns invoices that are:
+        - ≤ 8 weeks old (based on invoice_date, calculated from today)
+        - Not already in a collective invoice (not in collective_invoice_items)
+        - Open (present in latest snapshot)
+        """
+        try:
+            # Calculate date 8 weeks ago from TODAY
+            eight_weeks_ago = (datetime.now() - timedelta(weeks=8)).strftime("%Y-%m-%d")
+
+            candidates_by_customer = {}
+
+            with sqlite3.connect(app.config["DATABASE"]) as conn:
+                conn.row_factory = sqlite3.Row
+                init_db(conn)
+
+                # Get the latest snapshot date for status determination
+                latest_snapshot_row = conn.execute(
+                    "SELECT MAX(snapshot_date) as latest FROM snapshots"
+                ).fetchone()
+
+                if not latest_snapshot_row or not latest_snapshot_row["latest"]:
+                    return jsonify({"success": True, "candidates": {}})
+
+                latest_snapshot = latest_snapshot_row["latest"]
+
+                # Get ALL open invoices from the last 8 weeks that are not in a collective invoice
+                cursor = conn.execute(
+                    """
+                    SELECT
+                        i.id,
+                        i.customer_name,
+                        i.invoice_number,
+                        i.invoice_date,
+                        CAST(i.amount_cents AS REAL) / 100.0 as amount_eur,
+                        isna.file_path
+                    FROM invoices i
+                    JOIN invoice_snapshots isna ON i.id = isna.invoice_id
+                    JOIN snapshots s ON isna.snapshot_id = s.id
+                    WHERE i.invoice_date >= ?
+                    AND NOT EXISTS (
+                        SELECT 1 FROM collective_invoice_items cii
+                        WHERE cii.invoice_id = i.id
+                    )
+                    GROUP BY i.id
+                    HAVING MAX(s.snapshot_date) = ?
+                    ORDER BY i.customer_name, i.invoice_date DESC
+                    """,
+                    (eight_weeks_ago, latest_snapshot)
+                )
+
+                rows = cursor.fetchall()
+
+                # Group by customer
+                for row in rows:
+                    customer_name = row["customer_name"]
+                    if customer_name not in candidates_by_customer:
+                        candidates_by_customer[customer_name] = []
+                    candidates_by_customer[customer_name].append({
+                        "id": row["id"],
+                        "invoice_number": row["invoice_number"],
+                        "invoice_date": row["invoice_date"],
+                        "amount_eur": row["amount_eur"],
+                        "file_path": row["file_path"]
+                    })
+
+            return jsonify({
+                "success": True,
+                "candidates": candidates_by_customer
+            })
+
+        except Exception as e:
+            logging.error(f"Error getting collective invoice candidates: {e}")
             return jsonify({"success": False, "error": str(e)}), 500
 
     @app.route("/api/open-folder", methods=["POST"])
@@ -4886,6 +5263,86 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
         except Exception as e:
             logging.error(f"Error fetching invoice history: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/api/invoices/<int:invoice_id>/history/pdf", methods=["GET"])
+    def get_invoice_history_pdf(invoice_id: int):
+        """Generate a printable PDF of the invoice history."""
+        try:
+            with sqlite3.connect(app.config["DATABASE"]) as conn:
+                conn.row_factory = sqlite3.Row
+                init_db(conn)
+
+                # Get invoice data with address (including custom values from customer_details)
+                invoice = conn.execute(
+                    """
+                    SELECT i.id, i.customer_name, i.invoice_number, i.invoice_date, i.amount_cents,
+                           i.customer_street, i.customer_city,
+                           cd.custom_name, cd.custom_street, cd.custom_city
+                    FROM invoices i
+                    LEFT JOIN customer_details cd ON i.customer_name = cd.customer_name
+                    WHERE i.id = ?
+                    """,
+                    (invoice_id,)
+                ).fetchone()
+
+                if not invoice:
+                    return jsonify({"success": False, "error": "Rechnung nicht gefunden"}), 404
+
+                # Use custom values if available
+                customer_name = invoice["custom_name"] or invoice["customer_name"]
+                customer_street = invoice["custom_street"] or invoice["customer_street"] or ""
+                customer_city = invoice["custom_city"] or invoice["customer_city"] or ""
+
+                # Format invoice date (nur Datum, keine Uhrzeit)
+                invoice_date_formatted = ""
+                if invoice["invoice_date"]:
+                    try:
+                        from datetime import datetime
+                        dt = datetime.fromisoformat(invoice["invoice_date"].replace('Z', '+00:00'))
+                        invoice_date_formatted = dt.strftime('%d.%m.%Y')
+                    except:
+                        invoice_date_formatted = invoice["invoice_date"]
+
+                # Get all history events
+                cursor = conn.execute(
+                    """
+                    SELECT event_type, event_timestamp, metadata
+                    FROM invoice_history
+                    WHERE invoice_id = ?
+                    ORDER BY event_timestamp ASC
+                    """,
+                    (invoice_id,)
+                )
+
+                events = []
+                for row in cursor.fetchall():
+                    metadata_dict = json.loads(row["metadata"]) if row["metadata"] else {}
+                    events.append({
+                        "event_type": row["event_type"],
+                        "timestamp": row["event_timestamp"],
+                        "metadata": metadata_dict
+                    })
+
+                # Generate PDF
+                pdf_bytes = create_invoice_history_pdf(
+                    customer_name=customer_name,
+                    customer_street=customer_street,
+                    customer_city=customer_city,
+                    invoice_number=invoice["invoice_number"],
+                    invoice_date=invoice_date_formatted,
+                    amount_eur=invoice["amount_cents"] / 100.0,
+                    events=events
+                )
+
+                # Create response
+                response = make_response(pdf_bytes)
+                response.headers['Content-Type'] = 'application/pdf'
+                response.headers['Content-Disposition'] = f'inline; filename="Verlauf_{invoice["invoice_number"] or invoice_id}.pdf"'
+                return response
+
+        except Exception as e:
+            logging.error(f"Error generating invoice history PDF: {e}")
             return jsonify({"success": False, "error": str(e)}), 500
 
     @app.route("/api/invoices/<int:invoice_id>/toggle-uncollectible", methods=["POST"])

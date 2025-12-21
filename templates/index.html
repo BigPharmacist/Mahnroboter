@@ -106,11 +106,17 @@
           <div class="filter-row">
             <label class="filter-label">Rechnungsdatum:</label>
             <div class="filter-date-range">
-              <input type="date" id="invoice_date_from" class="filter-date-input"
-                     value="{{ invoice_date_from }}" placeholder="Von">
+              <div class="date-input-wrapper">
+                <input type="date" id="invoice_date_from" class="filter-date-input {% if invoice_date_from %}has-value{% endif %}"
+                       value="{{ invoice_date_from }}">
+                <button type="button" class="date-clear-btn" onclick="clearDateInput('invoice_date_from')" title="Datum löschen" {% if not invoice_date_from %}style="display:none"{% endif %}>&times;</button>
+              </div>
               <span class="date-range-separator">bis</span>
-              <input type="date" id="invoice_date_to" class="filter-date-input"
-                     value="{{ invoice_date_to }}" placeholder="Bis">
+              <div class="date-input-wrapper">
+                <input type="date" id="invoice_date_to" class="filter-date-input {% if invoice_date_to %}has-value{% endif %}"
+                       value="{{ invoice_date_to }}">
+                <button type="button" class="date-clear-btn" onclick="clearDateInput('invoice_date_to')" title="Datum löschen" {% if not invoice_date_to %}style="display:none"{% endif %}>&times;</button>
+              </div>
             </div>
           </div>
 
@@ -481,14 +487,49 @@
       window.location.href = '{{ url_for("index") }}?' + params.toString();
     }
 
+    // Clear date input and update UI
+    function clearDateInput(inputId) {
+      const input = document.getElementById(inputId);
+      const clearBtn = input.parentElement.querySelector('.date-clear-btn');
+      input.value = '';
+      input.classList.remove('has-value');
+      if (clearBtn) clearBtn.style.display = 'none';
+    }
+
+    // Update date input UI when value changes
+    function updateDateInputUI(input) {
+      const clearBtn = input.parentElement.querySelector('.date-clear-btn');
+      if (input.value) {
+        input.classList.add('has-value');
+        if (clearBtn) clearBtn.style.display = 'flex';
+      } else {
+        input.classList.remove('has-value');
+        if (clearBtn) clearBtn.style.display = 'none';
+      }
+    }
+
+    // Add event listeners to date inputs
+    document.addEventListener('DOMContentLoaded', function() {
+      const dateInputs = document.querySelectorAll('.filter-date-input');
+      dateInputs.forEach(input => {
+        input.addEventListener('change', function() {
+          updateDateInputUI(this);
+        });
+        // Also update on focus out to catch any changes
+        input.addEventListener('blur', function() {
+          updateDateInputUI(this);
+        });
+      });
+    });
+
     // Reset filters to defaults
     function resetFilters() {
       // Reset state to defaults
       Object.assign(filterState, defaultFilters);
 
-      // Reset date inputs
-      document.getElementById('invoice_date_from').value = '';
-      document.getElementById('invoice_date_to').value = '';
+      // Reset date inputs and their UI
+      clearDateInput('invoice_date_from');
+      clearDateInput('invoice_date_to');
 
       // Update button states visually
       document.querySelectorAll('#filterModal .filter-btn[data-filter]').forEach(btn => {
@@ -724,40 +765,88 @@
       };
     });
 
-    // Collective invoices button handler
+    // Collective invoices button handler - opens options modal
     document.getElementById('collective-button').addEventListener('click', async function() {
-      // Ask if SEPA mandate should be included
-      const includeSepa = confirm('Soll ein SEPA-Lastschriftmandat beigefügt werden?\n\n(Wird automatisch übersprungen für Kunden mit aktiviertem Bankeinzug)');
+      const modal = document.getElementById('collective-options-modal');
+      const folderInput = document.getElementById('collective-folder-name');
+      const sepaCheckbox = document.getElementById('collective-include-sepa');
+      const emailConsentCheckbox = document.getElementById('collective-include-email-consent');
+      const includeOlderCheckbox = document.getElementById('collective-include-older');
+      const olderCountEl = document.getElementById('collective-older-count');
 
-      // Ask if email consent form should be included
-      const includeEmailConsent = confirm('Soll ein Einwilligungsformular für E-Mail-Rechnungsversand beigefügt werden?\n\n(Kundenname wird automatisch eingetragen)');
-
-      // Ask for folder name with current month as default
+      // Set default folder name to previous month
       const today = new Date();
-      const defaultFolderName = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0');
-      const folderName = prompt('Bezeichnung für den Sammelrechnungs-Ordner:', defaultFolderName);
+      const prevMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+      const defaultFolderName = prevMonth.getFullYear() + '-' + String(prevMonth.getMonth() + 1).padStart(2, '0');
+      folderInput.value = defaultFolderName;
 
-      // If user cancels the prompt, abort
-      if (folderName === null) {
-        return;
+      // Reset checkboxes
+      sepaCheckbox.checked = false;
+      emailConsentCheckbox.checked = false;
+      includeOlderCheckbox.checked = true; // Default: include older invoices
+
+      // Reset and hide count display
+      olderCountEl.style.display = 'none';
+      olderCountEl.textContent = '';
+      collectiveSettings.candidates = {};
+
+      // Show modal
+      modal.classList.add('show');
+
+      // Load candidates in background to show count
+      try {
+        const currentUrl = new URL(window.location.href);
+        const params = new URLSearchParams(currentUrl.search);
+        if (!params.has('time')) params.set('time', 'current_month');
+        if (!params.has('status')) params.set('status', 'open');
+        if (!params.has('uncollectible')) params.set('uncollectible', 'hide');
+
+        const candidatesUrl = new URL('/api/collective-invoice-candidates', window.location.origin);
+        candidatesUrl.search = params.toString();
+
+        const response = await fetch(candidatesUrl);
+        const data = await response.json();
+
+        const detailLink = document.getElementById('show-candidates-detail');
+        if (data.success && Object.keys(data.candidates).length > 0) {
+          collectiveSettings.candidates = data.candidates;
+          // Count total invoices
+          let totalInvoices = 0;
+          let customerCount = Object.keys(data.candidates).length;
+          for (const invoices of Object.values(data.candidates)) {
+            totalInvoices += invoices.length;
+          }
+          olderCountEl.textContent = `${totalInvoices} ältere Rechnung${totalInvoices !== 1 ? 'en' : ''} von ${customerCount} Kunde${customerCount !== 1 ? 'n' : ''} gefunden`;
+          olderCountEl.style.display = 'block';
+          olderCountEl.style.color = '#2e7d32';
+          if (detailLink) detailLink.style.display = 'inline';
+        } else {
+          olderCountEl.textContent = 'Keine älteren Rechnungen gefunden';
+          olderCountEl.style.display = 'block';
+          olderCountEl.style.color = '#666';
+          if (detailLink) detailLink.style.display = 'none';
+        }
+      } catch (error) {
+        console.error('Error loading candidates:', error);
       }
+    });
 
-      // Validate folder name (no special characters that could cause path issues)
-      const cleanFolderName = folderName.trim();
-      if (!cleanFolderName) {
-        alert('Bitte geben Sie eine gültige Bezeichnung ein.');
-        return;
-      }
+    // Store collective invoice settings for use across modals
+    let collectiveSettings = {
+      folderName: '',
+      includeSepa: false,
+      includeEmailConsent: false,
+      candidates: {},
+      selectedAdditionalInvoices: {}
+    };
 
-      if (!confirm('Möchten Sie wirklich Sammelrechnungen für alle Rechnungsempfänger erzeugen?')) {
-        return;
-      }
-
-      const button = this;
+    // Function to generate collective invoices
+    async function generateCollectiveInvoices(additionalInvoices = {}) {
+      const collectiveButton = document.getElementById('collective-button');
       const status = document.getElementById('collective-status');
 
-      button.disabled = true;
-      button.textContent = '⏳ Erstelle Sammelrechnungen...';
+      collectiveButton.disabled = true;
+      collectiveButton.textContent = '⏳ Erstelle Sammelrechnungen...';
       status.textContent = '';
       status.className = 'collective-status';
 
@@ -765,12 +854,9 @@
         const currentUrl = new URL(window.location.href);
         const params = new URLSearchParams(currentUrl.search);
 
-        // Add include_sepa parameter
-        params.set('include_sepa', includeSepa ? 'true' : 'false');
-        // Add include_email_consent parameter
-        params.set('include_email_consent', includeEmailConsent ? 'true' : 'false');
-        // Add folder name parameter
-        params.set('folder_name', cleanFolderName);
+        params.set('include_sepa', collectiveSettings.includeSepa ? 'true' : 'false');
+        params.set('include_email_consent', collectiveSettings.includeEmailConsent ? 'true' : 'false');
+        params.set('folder_name', collectiveSettings.folderName);
 
         const apiUrl = new URL('/api/generate-collective-invoices', window.location.origin);
         apiUrl.search = params.toString();
@@ -779,23 +865,22 @@
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
-          }
+          },
+          body: JSON.stringify({ additional_invoices: additionalInvoices })
         });
 
         const data = await response.json();
 
         if (data.success) {
-          // Show success modal with statistics
-          const modal = document.getElementById('collective-result-modal');
+          const resultModal = document.getElementById('collective-result-modal');
           document.getElementById('collective-count').textContent = data.count;
           document.getElementById('collective-total-invoices').textContent = data.total_invoices;
           document.getElementById('collective-folder').textContent = data.output_folder;
 
-          // Store folder path for opening
           const openFolderBtn = document.getElementById('open-folder-btn');
           openFolderBtn.dataset.folderPath = data.output_folder_absolute;
 
-          modal.classList.add('show');
+          resultModal.classList.add('show');
 
           status.textContent = `✓ ${data.count} Sammelrechnung(en) erfolgreich erstellt`;
           status.className = 'collective-status success';
@@ -807,13 +892,271 @@
         status.textContent = '✗ Netzwerkfehler: ' + error.message;
         status.className = 'collective-status error';
       } finally {
-        button.disabled = false;
-        button.textContent = '📄 Sammelrechnungen erzeugen';
+        collectiveButton.disabled = false;
+        collectiveButton.textContent = '📄 Sammelrechnungen erzeugen';
       }
-    });
+    }
+
+    // Store candidates globally for filtering
+    let allInvoicesSorted = [];
+    let uniqueDates = []; // Unique invoice dates sorted newest to oldest
+
+    // Show candidates modal with checkboxes
+    function showCandidatesModal(candidates) {
+      // Calculate 8 weeks ago cutoff
+      const eightWeeksAgo = new Date();
+      eightWeeksAgo.setDate(eightWeeksAgo.getDate() - 56); // 8 weeks = 56 days
+
+      // Flatten all invoices with customer info and sort by date
+      allInvoicesSorted = [];
+      for (const [customerName, invoices] of Object.entries(candidates)) {
+        for (const invoice of invoices) {
+          const dateObj = new Date(invoice.invoice_date);
+          // Only include invoices within 8 weeks
+          if (dateObj >= eightWeeksAgo) {
+            allInvoicesSorted.push({
+              ...invoice,
+              customerName: customerName,
+              dateObj: dateObj,
+              dateString: invoice.invoice_date // Keep original date string for comparison
+            });
+          }
+        }
+      }
+      // Sort by date (newest first)
+      allInvoicesSorted.sort((a, b) => b.dateObj - a.dateObj);
+
+      // Get unique dates (sorted newest to oldest)
+      const dateSet = new Set();
+      uniqueDates = [];
+      for (const invoice of allInvoicesSorted) {
+        if (!dateSet.has(invoice.dateString)) {
+          dateSet.add(invoice.dateString);
+          uniqueDates.push({
+            dateString: invoice.dateString,
+            dateObj: invoice.dateObj
+          });
+        }
+      }
+
+      // Configure slider based on unique dates
+      const slider = document.getElementById('candidates-date-filter');
+      if (uniqueDates.length > 0) {
+        slider.min = 0;
+        slider.max = uniqueDates.length - 1;
+        slider.value = uniqueDates.length - 1; // Start with all dates (oldest)
+        slider.step = 1;
+      }
+
+      // Render the candidates
+      renderFilteredCandidates(uniqueDates.length - 1);
+
+      document.getElementById('collective-candidates-modal').classList.add('show');
+    }
+
+    // Render candidates filtered by the slider value (index into uniqueDates)
+    function renderFilteredCandidates(sliderValue) {
+      const candidatesList = document.getElementById('candidates-list');
+      const filterInfo = document.getElementById('candidates-filter-info');
+      candidatesList.innerHTML = '';
+
+      if (uniqueDates.length === 0) {
+        filterInfo.textContent = 'Keine Rechnungen gefunden';
+        return;
+      }
+
+      // Slider value is index: 0 = newest date only, max = all dates up to oldest
+      const cutoffIndex = parseInt(sliderValue);
+      const cutoffDate = uniqueDates[cutoffIndex].dateObj;
+
+      // Filter invoices: show all from newest date down to cutoff date
+      const invoicesToShow = allInvoicesSorted.filter(inv => inv.dateObj >= cutoffDate);
+
+      // Get date range for display
+      const newestDate = uniqueDates[0].dateObj.toLocaleDateString('de-DE');
+      const oldestShownDate = uniqueDates[cutoffIndex].dateObj.toLocaleDateString('de-DE');
+
+      const totalCount = allInvoicesSorted.length;
+      const showCount = invoicesToShow.length;
+
+      if (cutoffIndex === 0) {
+        filterInfo.textContent = `${showCount} von ${totalCount} Rechnungen (nur ${newestDate})`;
+      } else {
+        filterInfo.textContent = `${showCount} von ${totalCount} Rechnungen (${oldestShownDate} bis ${newestDate})`;
+      }
+
+      // Group by customer for display
+      const groupedByCustomer = {};
+      for (const invoice of invoicesToShow) {
+        if (!groupedByCustomer[invoice.customerName]) {
+          groupedByCustomer[invoice.customerName] = [];
+        }
+        groupedByCustomer[invoice.customerName].push(invoice);
+      }
+
+      for (const [customerName, invoices] of Object.entries(groupedByCustomer)) {
+        const customerSection = document.createElement('div');
+        customerSection.style.cssText = 'margin-bottom: 0.75rem; padding: 0.5rem 0.75rem; background: #f8f9fa; border-radius: 6px;';
+
+        const customerHeader = document.createElement('div');
+        customerHeader.style.cssText = 'font-weight: 600; margin-bottom: 0.25rem; color: #333; font-size: 0.9rem;';
+        customerHeader.textContent = customerName;
+        customerSection.appendChild(customerHeader);
+
+        for (const invoice of invoices) {
+          const invoiceLabel = document.createElement('label');
+          invoiceLabel.style.cssText = 'display: flex; align-items: center; gap: 0.5rem; padding: 0.2rem 0.25rem; cursor: pointer; border-radius: 3px; font-size: 0.85rem;';
+          invoiceLabel.onmouseover = () => invoiceLabel.style.background = '#e9ecef';
+          invoiceLabel.onmouseout = () => invoiceLabel.style.background = 'transparent';
+
+          const checkbox = document.createElement('input');
+          checkbox.type = 'checkbox';
+          checkbox.checked = true; // Default: all selected
+          checkbox.dataset.customername = customerName;
+          checkbox.dataset.invoiceid = invoice.id;
+          checkbox.style.cssText = 'width: 16px; height: 16px;';
+
+          const formattedDate = invoice.dateObj.toLocaleDateString('de-DE');
+          const formattedAmount = parseFloat(invoice.amount_eur).toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          const invoiceNum = invoice.invoice_number || '-';
+
+          const invoiceInfo = document.createElement('span');
+          invoiceInfo.innerHTML = `${formattedDate} &mdash; <span style="color: #28a745; font-weight: 500;">${formattedAmount} €</span> <span style="color: #888;">(${invoiceNum})</span>`;
+
+          invoiceLabel.appendChild(checkbox);
+          invoiceLabel.appendChild(invoiceInfo);
+          customerSection.appendChild(invoiceLabel);
+        }
+
+        candidatesList.appendChild(customerSection);
+      }
+    }
 
     // Wait for DOM to be fully loaded before attaching event listeners
     document.addEventListener('DOMContentLoaded', function() {
+      // Cancel collective options modal
+      const cancelCollectiveBtn = document.getElementById('cancel-collective-options');
+      if (cancelCollectiveBtn) {
+        cancelCollectiveBtn.addEventListener('click', function() {
+          document.getElementById('collective-options-modal').classList.remove('show');
+        });
+      }
+
+      // Confirm collective options - generate with or without older invoices
+      const confirmCollectiveBtn = document.getElementById('confirm-collective-options');
+      if (confirmCollectiveBtn) {
+        confirmCollectiveBtn.addEventListener('click', async function() {
+          const modal = document.getElementById('collective-options-modal');
+          const folderInput = document.getElementById('collective-folder-name');
+          const sepaCheckbox = document.getElementById('collective-include-sepa');
+          const emailConsentCheckbox = document.getElementById('collective-include-email-consent');
+          const includeOlderCheckbox = document.getElementById('collective-include-older');
+
+          // Validate folder name
+          const cleanFolderName = folderInput.value.trim();
+          if (!cleanFolderName) {
+            alert('Bitte geben Sie eine gültige Bezeichnung ein.');
+            return;
+          }
+
+          // Store settings
+          collectiveSettings.folderName = cleanFolderName;
+          collectiveSettings.includeSepa = sepaCheckbox.checked;
+          collectiveSettings.includeEmailConsent = emailConsentCheckbox.checked;
+          collectiveSettings.selectedAdditionalInvoices = {};
+
+          // Close options modal
+          modal.classList.remove('show');
+
+          // Check if we should include older invoices
+          if (includeOlderCheckbox.checked && Object.keys(collectiveSettings.candidates).length > 0) {
+            // Auto-include ALL older invoices (candidates already loaded when modal opened)
+            const allCandidatesSelected = {};
+            for (const [customerName, invoices] of Object.entries(collectiveSettings.candidates)) {
+              allCandidatesSelected[customerName] = invoices.map(inv => inv.id);
+            }
+            console.log('Auto-including all older invoices:', allCandidatesSelected);
+            generateCollectiveInvoices(allCandidatesSelected);
+          } else {
+            // Generate without older invoices
+            generateCollectiveInvoices({});
+          }
+        });
+      }
+
+      // "Auswahl anpassen" link - opens the detailed candidates modal
+      const showCandidatesDetailLink = document.getElementById('show-candidates-detail');
+      if (showCandidatesDetailLink) {
+        showCandidatesDetailLink.addEventListener('click', function(e) {
+          e.preventDefault();
+
+          // Store current settings before switching modals
+          const folderInput = document.getElementById('collective-folder-name');
+          const sepaCheckbox = document.getElementById('collective-include-sepa');
+          const emailConsentCheckbox = document.getElementById('collective-include-email-consent');
+
+          collectiveSettings.folderName = folderInput.value.trim();
+          collectiveSettings.includeSepa = sepaCheckbox.checked;
+          collectiveSettings.includeEmailConsent = emailConsentCheckbox.checked;
+
+          if (Object.keys(collectiveSettings.candidates).length > 0) {
+            // Close options modal and show candidates modal
+            document.getElementById('collective-options-modal').classList.remove('show');
+            showCandidatesModal(collectiveSettings.candidates);
+          } else {
+            alert('Keine älteren Rechnungen zum Auswählen verfügbar.');
+          }
+        });
+      }
+
+      // Date filter slider for candidates
+      const dateFilterSlider = document.getElementById('candidates-date-filter');
+      if (dateFilterSlider) {
+        dateFilterSlider.addEventListener('input', function() {
+          renderFilteredCandidates(parseInt(this.value));
+        });
+      }
+
+      // Cancel candidates - abort the entire process
+      const cancelCandidatesBtn = document.getElementById('cancel-candidates');
+      if (cancelCandidatesBtn) {
+        cancelCandidatesBtn.addEventListener('click', function() {
+          document.getElementById('collective-candidates-modal').classList.remove('show');
+          // Don't call generateCollectiveInvoices - just abort
+        });
+      }
+
+      // Skip candidates - generate without additional invoices
+      const skipCandidatesBtn = document.getElementById('skip-candidates');
+      if (skipCandidatesBtn) {
+        skipCandidatesBtn.addEventListener('click', function() {
+          document.getElementById('collective-candidates-modal').classList.remove('show');
+          generateCollectiveInvoices({});
+        });
+      }
+
+      // Add selected candidates and generate
+      const addSelectedBtn = document.getElementById('add-selected-candidates');
+      if (addSelectedBtn) {
+        addSelectedBtn.addEventListener('click', function() {
+          const selectedInvoices = {};
+
+          // Collect all checked checkboxes
+          document.querySelectorAll('#candidates-list input[type="checkbox"]:checked').forEach(checkbox => {
+            const customerName = checkbox.dataset.customername;
+            const invoiceId = parseInt(checkbox.dataset.invoiceid);
+
+            if (!selectedInvoices[customerName]) {
+              selectedInvoices[customerName] = [];
+            }
+            selectedInvoices[customerName].push(invoiceId);
+          });
+
+          document.getElementById('collective-candidates-modal').classList.remove('show');
+          generateCollectiveInvoices(selectedInvoices);
+        });
+      }
+
       // Close collective modal handler
       const closeBtn = document.getElementById('close-collective-modal');
       if (closeBtn) {
@@ -1070,6 +1413,87 @@
     </div>
   </div>
 
+  <!-- Collective Invoices Options Modal -->
+  <div id="collective-options-modal" class="modal">
+    <div class="modal-content" style="max-width: 450px;">
+      <div class="modal-header">
+        <h2>📄 Sammelrechnungen erzeugen</h2>
+      </div>
+      <div class="modal-body" style="padding: 1.5rem;">
+        <div style="margin-bottom: 1.5rem;">
+          <label for="collective-folder-name" style="display: block; margin-bottom: 0.5rem; font-weight: 500;">Ordnername:</label>
+          <input type="text" id="collective-folder-name" style="width: 100%; padding: 0.75rem; border: 1px solid #ddd; border-radius: 6px; font-size: 1rem;" placeholder="z.B. 2025-12">
+        </div>
+        <div style="margin-bottom: 1rem;">
+          <label style="display: flex; align-items: flex-start; gap: 0.75rem; cursor: pointer; padding: 0.75rem; border-radius: 6px; background: #f8f9fa;">
+            <input type="checkbox" id="collective-include-sepa" style="margin-top: 0.2rem; width: 18px; height: 18px;">
+            <div>
+              <span style="font-weight: 500;">SEPA-Lastschriftmandat beifügen</span>
+              <p style="margin: 0.25rem 0 0 0; font-size: 0.85rem; color: #666;">Wird automatisch übersprungen für Kunden mit aktiviertem Bankeinzug</p>
+            </div>
+          </label>
+        </div>
+        <div style="margin-bottom: 1rem;">
+          <label style="display: flex; align-items: flex-start; gap: 0.75rem; cursor: pointer; padding: 0.75rem; border-radius: 6px; background: #f8f9fa;">
+            <input type="checkbox" id="collective-include-email-consent" style="margin-top: 0.2rem; width: 18px; height: 18px;">
+            <div>
+              <span style="font-weight: 500;">E-Mail-Einwilligungsformular beifügen</span>
+              <p style="margin: 0.25rem 0 0 0; font-size: 0.85rem; color: #666;">Kundenname wird automatisch eingetragen</p>
+            </div>
+          </label>
+        </div>
+        <div style="margin-bottom: 1rem; border-top: 1px solid #e9ecef; padding-top: 1rem;">
+          <label style="display: flex; align-items: flex-start; gap: 0.75rem; cursor: pointer; padding: 0.75rem; border-radius: 6px; background: #e8f5e9;">
+            <input type="checkbox" id="collective-include-older" checked style="margin-top: 0.2rem; width: 18px; height: 18px;">
+            <div style="flex: 1;">
+              <span style="font-weight: 500;">Ältere offene Rechnungen einbeziehen</span>
+              <p style="margin: 0.25rem 0 0 0; font-size: 0.85rem; color: #666;">Rechnungen der letzten 8 Wochen, die noch nicht in einer Sammelrechnung enthalten sind</p>
+              <p id="collective-older-count" style="margin: 0.5rem 0 0 0; font-size: 0.85rem; color: #2e7d32; font-weight: 500; display: none;"></p>
+            </div>
+          </label>
+          <div style="margin-top: 0.5rem; padding-left: 2.5rem;">
+            <a href="#" id="show-candidates-detail" style="font-size: 0.85rem; color: #1976d2; text-decoration: none; display: none;">Auswahl anpassen...</a>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer" style="display: flex; gap: 0.75rem; justify-content: flex-end;">
+        <button id="cancel-collective-options" class="modal-close-btn">Abbrechen</button>
+        <button id="confirm-collective-options" class="btn-resolve-footer" style="background: #4CAF50;">Erstellen</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Collective Invoice Candidates Modal -->
+  <div id="collective-candidates-modal" class="modal">
+    <div class="modal-content" style="max-width: 600px;">
+      <div class="modal-header" style="padding: 0.75rem 1rem;">
+        <h2 style="font-size: 1.1rem; margin: 0;">Weitere Rechnungen (letzte 8 Wochen)</h2>
+        <p style="margin: 0.25rem 0 0 0; color: #666; font-size: 0.8rem;">
+          Offene Rechnungen, die noch nicht in einer Sammelrechnung enthalten sind.
+        </p>
+      </div>
+      <div style="padding: 0.5rem 1rem; border-bottom: 1px solid #e9ecef; background: #f8f9fa;">
+        <div style="display: flex; align-items: center; gap: 0.75rem;">
+          <span style="font-size: 0.8rem; color: #666; white-space: nowrap;">Neuere</span>
+          <input type="range" id="candidates-date-filter" min="0" max="100" value="100"
+                 style="flex: 1; height: 5px; cursor: pointer; accent-color: #4CAF50;">
+          <span style="font-size: 0.8rem; color: #666; white-space: nowrap;">Ältere</span>
+        </div>
+        <div style="text-align: center; margin-top: 0.25rem;">
+          <span id="candidates-filter-info" style="font-size: 0.8rem; color: #333; font-weight: 500;"></span>
+        </div>
+      </div>
+      <div class="modal-body" style="padding: 0.75rem 1rem; max-height: 350px; overflow-y: auto;">
+        <div id="candidates-list"></div>
+      </div>
+      <div class="modal-footer" style="display: flex; gap: 0.75rem; justify-content: flex-end;">
+        <button id="cancel-candidates" class="modal-close-btn" style="color: #dc3545;">Abbrechen</button>
+        <button id="skip-candidates" class="modal-close-btn">Überspringen</button>
+        <button id="add-selected-candidates" class="btn-resolve-footer" style="background: #4CAF50;">Ausgewählte anfügen</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Collective Invoices Result Modal -->
   <div id="collective-result-modal" class="modal">
     <div class="modal-content">
@@ -1128,6 +1552,7 @@
       </div>
     </div>
     <div class="modal-footer">
+      <button id="print-history-btn" class="modal-close-btn" style="background: #123C69; color: white; margin-right: 0.5rem;">🖨️ Verlauf drucken</button>
       <button id="close-history-modal" class="modal-close-btn">Schließen</button>
     </div>
   </div>
@@ -1138,7 +1563,11 @@
   (function() {
     const modal = document.getElementById('history-modal');
     const closeBtn = document.getElementById('close-history-modal');
+    const printBtn = document.getElementById('print-history-btn');
     const historyBtns = document.querySelectorAll('.history-btn');
+
+    // Store current invoice ID for printing
+    let currentInvoiceId = null;
 
     // Event type translations
     const eventTypeTranslations = {
@@ -1213,6 +1642,9 @@
     }
 
     function loadHistory(invoiceId, customerName, invoiceNumber) {
+      // Store invoice ID for printing
+      currentInvoiceId = invoiceId;
+
       // Show modal
       modal.classList.add('show');
 
@@ -1301,6 +1733,13 @@
         const invoiceNumber = this.getAttribute('data-invoice-number');
         loadHistory(invoiceId, customerName, invoiceNumber);
       });
+    });
+
+    // Print history handler
+    printBtn.addEventListener('click', function() {
+      if (currentInvoiceId) {
+        window.open(`/api/invoices/${currentInvoiceId}/history/pdf`, '_blank');
+      }
     });
 
     // Close modal handler
