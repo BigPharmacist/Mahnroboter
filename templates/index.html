@@ -4,42 +4,48 @@
 
 {% block content %}
 <div class="sticky-header">
-  <header>
-    <h1>Apotheken-Rechnungen</h1>
-    <p class="subtitle">Anzeige der {{ limit }} zuletzt erfassten Rechnungen.</p>
-  </header>
+  <div class="header-bar">
+    <header class="header-title">
+      <h1>Apotheken-Rechnungen</h1>
+      <p class="subtitle">Anzeige der {{ limit }} zuletzt erfassten Rechnungen.</p>
+    </header>
 
-  <div class="scan-controls">
-    <button id="scan-button" class="scan-button">&#x1F50D; Neu Importieren</button>
-    <button id="pending-imports-button" class="scan-button" style="background-color: #ff6b35; margin-left: 0.5rem; display: none;">
-      ⚠️ Pending Imports <span id="pending-imports-badge" class="filter-badge"></span>
-    </button>
-    <form method="get" class="search-form" style="display: inline-flex; align-items: center; gap: 0.5rem; margin-left: 1rem;">
-      <label for="q">Suche</label>
-      <input type="text" id="q" name="q" value="{{ query }}" placeholder="Name, Rechnungsnummer oder Adresse">
-      <input type="hidden" name="grouped" value="{{ 'true' if grouped else 'false' }}">
-      <input type="hidden" name="sort" value="{{ sort_by }}">
-      <input type="hidden" name="direction" value="{{ sort_direction }}">
-      <input type="hidden" name="time" value="{{ time_filter }}">
-      <input type="hidden" name="status" value="{{ status_filter }}">
-      <input type="hidden" name="email" value="{{ email_filter }}">
-      <input type="hidden" name="uncollectible" value="{{ uncollectible_filter }}">
-      <input type="hidden" name="collective" value="{{ collective_filter }}">
-      <input type="hidden" name="invoice_date_from" value="{{ invoice_date_from }}">
-      <input type="hidden" name="invoice_date_to" value="{{ invoice_date_to }}">
-      <button type="submit">Filtern</button>
-      {% if query %}
-      <a class="reset" href="{{ url_for('index', time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, uncollectible=uncollectible_filter, collective=collective_filter, invoice_date_from=invoice_date_from, invoice_date_to=invoice_date_to, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}">Suche zurücksetzen</a>
-      {% endif %}
-    </form>
-    <span id="scan-status" class="scan-status"></span>
-    <!-- Filter Button - rechts oben -->
-    <button type="button" class="filter-toggle-btn filter-toggle-btn-header" onclick="toggleFilterModal()">
-      🔍 Filter
-      {% if invoice_date_from or invoice_date_to or status_filter != 'open' or email_filter != 'all' or uncollectible_filter != 'hide' or collective_filter != 'all' %}
-      <span class="filter-badge">aktiv</span>
-      {% endif %}
-    </button>
+    <div class="header-search">
+      <form method="get" class="search-form">
+        <label for="q">Suche</label>
+        <input type="text" id="q" name="q" value="{{ query }}" placeholder="Name, Rechnungsnummer oder Adresse">
+        <input type="hidden" name="grouped" value="{{ 'true' if grouped else 'false' }}">
+        <input type="hidden" name="sort" value="{{ sort_by }}">
+        <input type="hidden" name="direction" value="{{ sort_direction }}">
+        <input type="hidden" name="time" value="{{ time_filter }}">
+        <input type="hidden" name="status" value="{{ status_filter }}">
+        <input type="hidden" name="email" value="{{ email_filter }}">
+        <input type="hidden" name="uncollectible" value="{{ uncollectible_filter }}">
+        <input type="hidden" name="collective" value="{{ collective_filter }}">
+        <input type="hidden" name="invoice_date_from" value="{{ invoice_date_from }}">
+        <input type="hidden" name="invoice_date_to" value="{{ invoice_date_to }}">
+        <button type="submit">Filtern</button>
+        {% if query %}
+        <a class="reset" href="{{ url_for('index', time=time_filter, from_month=from_month, to_month=to_month, status=status_filter, email=email_filter, uncollectible=uncollectible_filter, collective=collective_filter, invoice_date_from=invoice_date_from, invoice_date_to=invoice_date_to, grouped='true' if grouped else 'false', sort=sort_by, direction=sort_direction) }}">Suche zurücksetzen</a>
+        {% endif %}
+      </form>
+      <button type="button" class="filter-toggle-btn filter-toggle-btn-header" onclick="toggleFilterModal()">
+        🔍 Filter
+        {% if invoice_date_from or invoice_date_to or status_filter != 'open' or email_filter != 'all' or uncollectible_filter != 'hide' or collective_filter != 'all' %}
+        <span class="filter-badge">aktiv</span>
+        {% endif %}
+      </button>
+    </div>
+
+    <div class="header-actions">
+      <div class="primary-actions">
+        <button id="scan-button" class="scan-button">&#x1F50D; Neu Importieren</button>
+        <button id="pending-imports-button" class="scan-button pending-imports-button" style="display: none;">
+          ⚠️ Pending Imports <span id="pending-imports-badge" class="filter-badge"></span>
+        </button>
+      </div>
+      <span id="scan-status" class="scan-status"></span>
+    </div>
   </div>
 
   <section class="controls">
@@ -204,8 +210,8 @@
         </div>
       </div>
     </div>
-    <div class="action-buttons-container" style="display: flex; gap: 1rem; align-items: flex-start;">
-      <div style="flex: 1;">
+    <div class="action-buttons-container">
+      <div class="action-buttons">
         <div class="action-buttons-grid">
           <button id="print-button" class="print-button action-btn">&#x1F5A8; Rechnungen drucken ({{ invoices|length }})</button>
           <button id="email-button" class="email-button action-btn">&#x2709; Rechnungen per E-Mail versenden ({{ invoices|length }})</button>
@@ -224,7 +230,7 @@
         </div>
       </div>
       <!-- Formular-Info-Box -->
-      <div id="form-usage-info" class="form-usage-info-box" style="background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 0.75rem 1rem; min-width: 220px; font-size: 0.85rem;">
+      <div id="form-usage-info" class="form-usage-info-box">
         <div style="font-weight: 600; margin-bottom: 0.5rem; color: #495057;">Formulare hinzugefuegt:</div>
         <div style="display: flex; flex-direction: column; gap: 0.4rem;">
           <div>
