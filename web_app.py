@@ -3054,7 +3054,9 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     "SELECT filename, month FROM sammelrechnungen_rx WHERE selected = 1"
                 ).fetchall()
                 for row in rx_rows:
-                    rx_selections[(row["filename"], row["month"])] = True
+                    # Normalize filename to NFC for consistent lookups (handles old NFD entries)
+                    normalized_fn = unicodedata.normalize('NFC', row["filename"])
+                    rx_selections[(normalized_fn, row["month"])] = True
         except Exception as e:
             logging.error(f"Failed to fetch LetterXpress status: {e}")
 
@@ -3106,13 +3108,16 @@ def create_app(config: Optional[dict] = None) -> Flask:
                         # Check if rX is selected for this invoice
                         is_rx_selected = rx_selections.get((normalized_filename, month), False)
 
+                        # Normalize relative_path for cross-platform compatibility
+                        normalized_relative_path = unicodedata.normalize('NFC', str(relative_path))
+
                         collective_invoices.append({
                             "month": month,
                             "customer_name": customer_name,
-                            "filename": pdf_file.name,
+                            "filename": normalized_filename,
                             "created_at": created_at,
                             "file_size_kb": file_size_kb,
-                            "relative_path": str(relative_path),
+                            "relative_path": normalized_relative_path,
                             "letterxpress_status": lx_status,
                             "print_only": is_print_only,
                             "rx_selected": is_rx_selected
@@ -4796,6 +4801,9 @@ def create_app(config: Optional[dict] = None) -> Flask:
             if not filename or not month:
                 return jsonify({"success": False, "error": "Filename und Monat erforderlich"}), 400
 
+            # Normalize Unicode to NFC for cross-platform compatibility
+            filename = unicodedata.normalize('NFC', filename)
+
             invoices_logged = 0
             with sqlite3.connect(app.config["DATABASE"]) as conn:
                 init_db(conn)
@@ -5471,12 +5479,15 @@ def create_app(config: Optional[dict] = None) -> Flask:
             abort(400, "Keine PDF-Pfade angegeben")
 
         paths = paths_param.split(",")
-        root = BASE_DIR.resolve()
+        # Use DATA_DIR as root (where the data folders are located)
+        root = get_data_dir().resolve()
 
         pdf_writer = PdfWriter()
 
         for relative_path in paths:
-            target = (root / relative_path.strip()).resolve()
+            # Normalize Unicode to NFC for cross-platform compatibility
+            relative_path = unicodedata.normalize('NFC', relative_path.strip())
+            target = (root / relative_path).resolve()
             try:
                 target.relative_to(root)
             except ValueError:
@@ -5514,6 +5525,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
         # Allow serving PDFs from both Rechnungen and Sammelrechnungen folders
         # Use DATA_DIR as root (where the data folders are located)
         root = get_data_dir().resolve()
+        # Normalize Unicode to NFC for cross-platform compatibility (macOS uses NFD, Windows uses NFC)
+        relative_path = unicodedata.normalize('NFC', relative_path)
         target = (root / relative_path).resolve()
         try:
             target.relative_to(root)

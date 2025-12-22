@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 from typing import Iterable, Optional
 import os
+import unicodedata
 
 from pypdf import PdfReader
 import pdfplumber
@@ -1776,15 +1777,18 @@ def detect_and_log_payments(conn: sqlite3.Connection, current_snapshot_date: str
 
 
 def storage_key(pdf_path: Path, root: Path) -> str:
-    # Always store paths relative to BASE_DIR for consistency with serve_pdf route
+    # Store paths relative to DATA_DIR (get_data_dir()) for consistency with serve_pdf route
+    # Normalize Unicode to NFC for cross-platform compatibility (macOS uses NFD, Windows uses NFC)
+    data_dir = get_data_dir()
     try:
-        return str(pdf_path.relative_to(BASE_DIR))
+        relative = str(pdf_path.relative_to(data_dir))
     except ValueError:
-        # Fallback: if not under BASE_DIR, try relative to root
+        # Fallback: if not under DATA_DIR, try relative to root
         try:
-            return str(pdf_path.relative_to(root))
+            relative = str(pdf_path.relative_to(root))
         except ValueError:
-            return str(pdf_path.resolve())
+            relative = str(pdf_path.resolve())
+    return unicodedata.normalize('NFC', relative)
 
 
 def process_pdf_file(conn: sqlite3.Connection, pdf_path: Path, root: Path) -> bool:
