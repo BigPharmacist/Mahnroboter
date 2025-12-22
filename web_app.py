@@ -3109,7 +3109,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
                         is_rx_selected = rx_selections.get((normalized_filename, month), False)
 
                         # Normalize relative_path for cross-platform compatibility
-                        normalized_relative_path = unicodedata.normalize('NFC', str(relative_path))
+                        # Use as_posix() to ensure forward slashes for URLs (Windows uses backslashes)
+                        normalized_relative_path = unicodedata.normalize('NFC', relative_path.as_posix())
 
                         collective_invoices.append({
                             "month": month,
