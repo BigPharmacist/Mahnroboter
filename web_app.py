@@ -2127,6 +2127,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 SELECT
                     i.id,
                     i.customer_name,
+                    i.invoice_date,
                     i.amount_cents,
                     CASE
                         WHEN EXISTS (
@@ -2138,6 +2139,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
                         ELSE 'paid'
                     END AS status
                 FROM invoices i
+                LEFT JOIN customer_details cd ON i.customer_name = cd.customer_name
+                WHERE (cd.hide_before_date IS NULL OR i.invoice_date >= cd.hide_before_date)
             )
             SELECT
                 COUNT(CASE WHEN status = 'open' THEN 1 END) as open_count,
@@ -2155,6 +2158,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 SELECT
                     i.id,
                     i.customer_name,
+                    i.invoice_date,
                     i.amount_cents,
                     CASE
                         WHEN EXISTS (
@@ -2166,6 +2170,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
                         ELSE 'paid'
                     END AS status
                 FROM invoices i
+                LEFT JOIN customer_details cd ON i.customer_name = cd.customer_name
+                WHERE (cd.hide_before_date IS NULL OR i.invoice_date >= cd.hide_before_date)
             )
             SELECT
                 customer_name as name,
@@ -2221,6 +2227,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
                         ELSE 'paid'
                     END AS status
                 FROM invoices i
+                LEFT JOIN customer_details cd ON i.customer_name = cd.customer_name
+                WHERE (cd.hide_before_date IS NULL OR i.invoice_date >= cd.hide_before_date)
             ),
             last_reminder_per_invoice AS (
                 SELECT
@@ -2304,6 +2312,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
                         ELSE 'paid'
                     END AS status
                 FROM invoices i
+                LEFT JOIN customer_details cd ON i.customer_name = cd.customer_name
+                WHERE (cd.hide_before_date IS NULL OR i.invoice_date >= cd.hide_before_date)
             ),
             last_reminder_per_invoice AS (
                 SELECT
@@ -2559,11 +2569,12 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     custom_name = data.get("custom_name", "")
                     custom_street = data.get("custom_street", "")
                     custom_city = data.get("custom_city", "")
+                    hide_before_date = data.get("hide_before_date", "") or None
 
                     conn.execute(
                         """
-                        INSERT INTO customer_details (customer_name, salutation, email, notes, never_remind, bank_debit, print_only, custom_name, custom_street, custom_city, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+                        INSERT INTO customer_details (customer_name, salutation, email, notes, never_remind, bank_debit, print_only, hide_before_date, custom_name, custom_street, custom_city, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
                         ON CONFLICT(customer_name) DO UPDATE SET
                             salutation = excluded.salutation,
                             email = excluded.email,
@@ -2571,12 +2582,13 @@ def create_app(config: Optional[dict] = None) -> Flask:
                             never_remind = excluded.never_remind,
                             bank_debit = excluded.bank_debit,
                             print_only = excluded.print_only,
+                            hide_before_date = excluded.hide_before_date,
                             custom_name = excluded.custom_name,
                             custom_street = excluded.custom_street,
                             custom_city = excluded.custom_city,
                             updated_at = datetime('now', 'localtime')
                         """,
-                        (customer_name, salutation, email, notes, never_remind, bank_debit, print_only, custom_name, custom_street, custom_city)
+                        (customer_name, salutation, email, notes, never_remind, bank_debit, print_only, hide_before_date, custom_name, custom_street, custom_city)
                     )
                 else:
                     # Partial update - preserve existing custom_* fields (from table save)
@@ -5705,6 +5717,9 @@ def fetch_invoices(
             sql += " AND ist.uncollectible = 1"
         # If uncollectible_filter == "show", don't add any filter (show all)
 
+        # Apply hide_before_date filter (hide invoices older than customer's hide_before_date)
+        sql += " AND (cd.hide_before_date IS NULL OR ist.invoice_date >= cd.hide_before_date)"
+
         # Apply collective invoice filter
         if collective_filter == "in":
             sql += " AND EXISTS (SELECT 1 FROM collective_invoice_items cii WHERE cii.invoice_id = ist.id)"
@@ -5894,6 +5909,7 @@ def fetch_all_customers(database_path: str) -> List[Dict]:
                 cd.never_remind,
                 cd.bank_debit,
                 cd.print_only,
+                cd.hide_before_date,
                 cd.custom_name,
                 cd.custom_street,
                 cd.custom_city,
@@ -5901,7 +5917,7 @@ def fetch_all_customers(database_path: str) -> List[Dict]:
                 SUM(i.amount_cents) as total_amount_cents
             FROM invoices i
             LEFT JOIN customer_details cd ON i.customer_name = cd.customer_name
-            GROUP BY i.customer_name, i.customer_address, i.customer_street, i.customer_city, cd.salutation, cd.email, cd.notes, cd.never_remind, cd.bank_debit, cd.print_only, cd.custom_name, cd.custom_street, cd.custom_city
+            GROUP BY i.customer_name, i.customer_address, i.customer_street, i.customer_city, cd.salutation, cd.email, cd.notes, cd.never_remind, cd.bank_debit, cd.print_only, cd.hide_before_date, cd.custom_name, cd.custom_street, cd.custom_city
             ORDER BY i.customer_name
         """
 
@@ -5929,6 +5945,7 @@ def fetch_all_customers(database_path: str) -> List[Dict]:
             "never_remind": row["never_remind"] or 0,
             "bank_debit": row["bank_debit"] or 0,
             "print_only": row["print_only"] or 0,
+            "hide_before_date": row["hide_before_date"] or "",
             "address_incomplete": row["address_incomplete"] or 0,
             "name_needs_review": row["name_needs_review"] or 0,
             "invoice_count": row["invoice_count"],
@@ -6056,6 +6073,9 @@ def fetch_invoices_with_reminders(database_path: str, filter_reminded: Optional[
         # Apply never_remind filter (hide customers with never_remind=1 by default)
         if hide_never_remind:
             sql += " AND COALESCE(cd.never_remind, 0) = 0"
+
+        # Apply hide_before_date filter (hide invoices older than customer's hide_before_date)
+        sql += " AND (cd.hide_before_date IS NULL OR ist.invoice_date >= cd.hide_before_date)"
 
         # Apply reminder filter
         if filter_reminded is True:

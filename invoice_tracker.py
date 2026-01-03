@@ -280,6 +280,14 @@ def init_db(conn: sqlite3.Connection) -> None:
         # Column already exists, that's fine
         pass
 
+    # Add hide_before_date column if it doesn't exist (for hiding old invoices)
+    try:
+        conn.execute("ALTER TABLE customer_details ADD COLUMN hide_before_date TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        # Column already exists, that's fine
+        pass
+
     # Add uncollectible column to invoices if it doesn't exist (for existing databases)
     try:
         conn.execute("ALTER TABLE invoices ADD COLUMN uncollectible INTEGER DEFAULT 0")

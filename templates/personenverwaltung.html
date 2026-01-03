@@ -63,11 +63,12 @@
         <th class="sortable" data-sort="never_remind" data-type="checkbox">Nie mahnen! <span class="sort-arrow"></span></th>
         <th class="sortable" data-sort="bank_debit" data-type="checkbox">Bankeinzug <span class="sort-arrow"></span></th>
         <th class="sortable" data-sort="print_only" data-type="checkbox">Nur Drucken <span class="sort-arrow"></span></th>
+        <th class="sortable" data-sort="hide_before_date" data-type="string">Ausbl. vor <span class="sort-arrow"></span></th>
       </tr>
     </thead>
     <tbody>
       {% for customer in customers %}
-      <tr data-customer="{{ customer.customer_name }}" data-street="{{ customer.customer_street }}" data-city="{{ customer.customer_city }}" data-address-incomplete="{{ customer.address_incomplete }}" data-name-needs-review="{{ customer.name_needs_review }}" data-row-id="{{ loop.index }}">
+      <tr data-customer="{{ customer.customer_name }}" data-street="{{ customer.customer_street }}" data-city="{{ customer.customer_city }}" data-address-incomplete="{{ customer.address_incomplete }}" data-name-needs-review="{{ customer.name_needs_review }}" data-hide-before-date="{{ customer.hide_before_date }}" data-row-id="{{ loop.index }}">
         <td class="row-number">{{ loop.index }}</td>
         <td>
           <select class="form-input salutation-input" data-customer="{{ customer.customer_name }}" data-street="{{ customer.customer_street }}" data-city="{{ customer.customer_city }}">
@@ -122,6 +123,12 @@
                  class="print-only-checkbox"
                  data-customer="{{ customer.customer_name }}"
                  {% if customer.print_only %}checked{% endif %}>
+        </td>
+        <td class="text-center">
+          <input type="date"
+                 class="form-input hide-before-date-input"
+                 data-customer="{{ customer.customer_name }}"
+                 value="{{ customer.hide_before_date }}">
         </td>
       </tr>
       {% endfor %}
@@ -224,6 +231,11 @@
               <span>✓ Name korrigiert</span>
             </label>
           </div>
+        </div>
+
+        <div class="form-group" style="margin-top: 1rem;">
+          <label for="modal-hide-before-date">Ausblenden vor (Rechnungen vor diesem Datum werden nicht angezeigt)</label>
+          <input type="date" id="modal-hide-before-date" class="form-control" style="max-width: 200px;">
         </div>
       </form>
     </div>
@@ -393,6 +405,7 @@ document.addEventListener('DOMContentLoaded', function() {
   const neverRemindCheckboxes = document.querySelectorAll('.never-remind-checkbox');
   const bankDebitCheckboxes = document.querySelectorAll('.bank-debit-checkbox');
   const printOnlyCheckboxes = document.querySelectorAll('.print-only-checkbox');
+  const hideBeforeDateInputs = document.querySelectorAll('.hide-before-date-input');
 
   salutationInputs.forEach(input => input.addEventListener('change', markAsUnsaved));
   emailInputs.forEach(input => input.addEventListener('input', markAsUnsaved));
@@ -400,6 +413,7 @@ document.addEventListener('DOMContentLoaded', function() {
   neverRemindCheckboxes.forEach(input => input.addEventListener('change', markAsUnsaved));
   bankDebitCheckboxes.forEach(input => input.addEventListener('change', markAsUnsaved));
   printOnlyCheckboxes.forEach(input => input.addEventListener('change', markAsUnsaved));
+  hideBeforeDateInputs.forEach(input => input.addEventListener('change', markAsUnsaved));
 });
 
 // Filter customers based on search input and filters
@@ -508,6 +522,8 @@ function sortTable(column, type) {
         return row.querySelector('.bank-debit-checkbox').checked ? 1 : 0;
       case 'print_only':
         return row.querySelector('.print-only-checkbox').checked ? 1 : 0;
+      case 'hide_before_date':
+        return row.querySelector('.hide-before-date-input') ? row.querySelector('.hide-before-date-input').value : '';
       default:
         return '';
     }
@@ -590,6 +606,7 @@ function openCustomerModal(rowId) {
   const neverRemind = row.querySelector('.never-remind-checkbox').checked;
   const bankDebit = row.querySelector('.bank-debit-checkbox').checked;
   const printOnly = row.querySelector('.print-only-checkbox').checked;
+  const hideBeforeDate = row.querySelector('.hide-before-date-input') ? row.querySelector('.hide-before-date-input').value : '';
   const addressIncomplete = row.dataset.addressIncomplete === '1' || row.dataset.addressIncomplete === 'True';
   const nameNeedsReview = row.dataset.nameNeedsReview === '1' || row.dataset.nameNeedsReview === 'True';
 
@@ -606,6 +623,7 @@ function openCustomerModal(rowId) {
   document.getElementById('modal-never-remind').checked = neverRemind;
   document.getElementById('modal-bank-debit').checked = bankDebit;
   document.getElementById('modal-print-only').checked = printOnly;
+  document.getElementById('modal-hide-before-date').value = hideBeforeDate;
 
   // Show/hide address incomplete badge and checkbox
   const badge = document.getElementById('modal-address-incomplete-badge');
@@ -654,6 +672,7 @@ async function saveCustomer() {
   const neverRemind = document.getElementById('modal-never-remind').checked;
   const bankDebit = document.getElementById('modal-bank-debit').checked;
   const printOnly = document.getElementById('modal-print-only').checked;
+  const hideBeforeDate = document.getElementById('modal-hide-before-date').value;
   const clearAddressIncomplete = document.getElementById('modal-clear-address-incomplete').checked;
   const clearNameNeedsReview = document.getElementById('modal-clear-name-needs-review').checked;
 
@@ -677,6 +696,7 @@ async function saveCustomer() {
         never_remind: neverRemind,
         bank_debit: bankDebit,
         print_only: printOnly,
+        hide_before_date: hideBeforeDate,
         custom_name: customName,
         custom_street: customStreet,
         custom_city: customCity,
@@ -993,6 +1013,21 @@ document.addEventListener('keydown', function(event) {
   max-width: 50px;
   min-width: 50px;
   text-align: center;
+}
+
+/* Ausblenden-vor-Datum-Spalte */
+.customers-table th:nth-child(11),
+.customers-table td:nth-child(11) {
+  width: 120px;
+  max-width: 120px;
+  min-width: 100px;
+  text-align: center;
+}
+
+.hide-before-date-input {
+  width: 100%;
+  padding: 0.2rem 0.25rem;
+  font-size: 0.7rem;
 }
 
 .never-remind-checkbox,
