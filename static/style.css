@@ -396,12 +396,20 @@ th.sortable.sort-desc .sort-arrow::before {
   content: '▼';
 }
 
-tbody tr:hover {
-  background: #f8fafc;
-}
-
 tbody tr {
   transition: background 0.1s;
+}
+
+tbody tr:nth-child(odd) {
+  background: #ffffff;
+}
+
+tbody tr:nth-child(even) {
+  background: #e2e8f0;
+}
+
+tbody tr:hover {
+  background: #e8f4f8 !important;
 }
 
 td a {
@@ -629,6 +637,18 @@ td a:hover {
 .customer-invoices tbody td {
   padding: 0.3rem 0.5rem;
   font-size: 0.75rem;
+}
+
+.customer-invoices tbody tr:nth-child(odd) {
+  background: #ffffff;
+}
+
+.customer-invoices tbody tr:nth-child(even) {
+  background: #e2e8f0;
+}
+
+.customer-invoices tbody tr:hover {
+  background: #e8f4f8 !important;
 }
 
 .customer-invoices tbody tr:last-child td {
@@ -965,12 +985,22 @@ tr.paid-invoice:hover {
 .top-customers-table tbody td,
 .snapshots-table tbody td {
   padding: 0.65rem 0.75rem;
-  border-bottom: 1px solid #f5f7fa;
+  border-bottom: 1px solid #e4e7eb;
+}
+
+.top-customers-table tbody tr:nth-child(odd),
+.snapshots-table tbody tr:nth-child(odd) {
+  background: #ffffff;
+}
+
+.top-customers-table tbody tr:nth-child(even),
+.snapshots-table tbody tr:nth-child(even) {
+  background: #e2e8f0;
 }
 
 .top-customers-table tbody tr:hover,
 .snapshots-table tbody tr:hover {
-  background: #f5f7fa;
+  background: #e8f4f8 !important;
 }
 
 .quick-actions {

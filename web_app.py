@@ -3610,7 +3610,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
         try:
             # Create PDF writer
             pdf_writer = PdfWriter()
-            root = BASE_DIR
+            root = get_data_dir()
 
             # Add all PDFs to the writer
             for invoice in invoices_with_files:
@@ -3721,7 +3721,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     success_count = 0
                     failed_count = 0
                     processed_groups = 0
-                    root = BASE_DIR
+                    root = get_data_dir()
 
                     # Process each group only if SMTP connection is established
                     if not smtp_connection_failed:
@@ -4083,8 +4083,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     })
 
                 # Generate PDFs for each group
-                # Use BASE_DIR since file_path already contains "Rechnungen/" prefix
-                root = BASE_DIR
+                # Use get_data_dir() to access files in DATA_DIR location
+                root = get_data_dir()
 
                 for (customer_name, customer_address, reminder_level), invoice_list in grouped.items():
                     # Get salutation for customer from customer_details, or determine via AI
@@ -4290,8 +4290,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
                 count = 0
                 total_invoices = 0
-                # Use BASE_DIR since file_path already contains "Rechnungen/" prefix
-                root = BASE_DIR
+                # Use get_data_dir() to access files in DATA_DIR location
+                root = get_data_dir()
 
                 for customer_name, customer_invoice_list in customer_invoices.items():
                     # Sort by date descending to get latest invoices first
@@ -4961,7 +4961,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
             # Convert relative paths to absolute paths
             results = []
-            base_dir = BASE_DIR.resolve()
+            base_dir = get_data_dir().resolve()
 
             for relative_path in pdf_paths:
                 try:
@@ -5146,7 +5146,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
             # Convert relative paths to absolute paths
             results = []
-            base_dir = BASE_DIR.resolve()
+            base_dir = get_data_dir().resolve()
 
             for relative_path in pdf_paths:
                 try:
