@@ -32,6 +32,9 @@
     <button class="btn btn-secondary btn-sm" onclick="togglePrintOnlyFilter()" id="filterPrintOnlyBtn" style="padding: 1rem 1.5rem; font-size: 1rem;">
       🖨️ Nur-Drucken ausblenden
     </button>
+    <button class="btn btn-info btn-sm" onclick="cycleRxSelection()" id="rxCycleBtn" style="padding: 1rem 1.5rem; font-size: 1rem; background: #17a2b8; color: white;">
+      ☑️ Alle im offenen Monat
+    </button>
     <button class="btn btn-primary btn-sm" onclick="showLetterXpressDialog()" id="sendBtn" style="padding: 1rem 1.5rem; font-size: 1rem;">
       📮 Per LetterXpress versenden
     </button>
@@ -347,7 +350,11 @@ async function confirmAndSend() {
       const stats = result.statistics;
       const apiMode = result.mode === 'test' ? 'TEST-MODUS' : 'LIVE-MODUS';
 
-      let message = `✅ Erfolgreich versendet (${apiMode})!\n\n`;
+      // Choose icon and title based on success count
+      let icon = stats.successful > 0 ? '✅' : '❌';
+      let title = stats.successful > 0 ? 'Erfolgreich versendet' : 'Versand fehlgeschlagen';
+
+      let message = `${icon} ${title} (${apiMode})!\n\n`;
       message += `Erfolgreich: ${stats.successful}/${stats.total}\n`;
       message += `Fehlgeschlagen: ${stats.failed}\n`;
       message += `Gesamtkosten: ${stats.total_price.toFixed(2)} EUR\n`;
@@ -443,6 +450,67 @@ function togglePrintOnlyFilter() {
       btn.textContent = '🖨️ Alle anzeigen';
       break;
   }
+}
+
+// RX cycle selection (all → only RX → only non-RX → none)
+let rxSelectionState = 0; // 0 = neutral, 1 = alle im offenen Monat, 2 = nur mit RX, 3 = nur ohne RX
+
+function cycleRxSelection() {
+  const btn = document.getElementById('rxCycleBtn');
+
+  // Find the first open (non-collapsed) month group
+  const openGroup = document.querySelector('.customer-group:not(.collapsed)');
+
+  if (!openGroup) {
+    alert('Bitte öffnen Sie zuerst einen Monat.');
+    return;
+  }
+
+  // Get all checkboxes in the open group
+  const allCheckboxes = openGroup.querySelectorAll('.invoice-checkbox');
+  const allRxCheckboxes = openGroup.querySelectorAll('.rx-checkbox');
+
+  // Create a map of checkbox to rx status
+  const checkboxRxMap = new Map();
+  allCheckboxes.forEach((checkbox, index) => {
+    const rxCheckbox = allRxCheckboxes[index];
+    checkboxRxMap.set(checkbox, rxCheckbox?.checked || false);
+  });
+
+  // Cycle through states
+  rxSelectionState = (rxSelectionState + 1) % 4;
+
+  switch(rxSelectionState) {
+    case 0: // Neutral - alles abwählen
+      allCheckboxes.forEach(cb => cb.checked = false);
+      btn.textContent = '☑️ Alle im offenen Monat';
+      btn.style.background = '#17a2b8';
+      break;
+
+    case 1: // Alle im offenen Monat auswählen
+      allCheckboxes.forEach(cb => cb.checked = true);
+      btn.textContent = '✅ Nur mit rX';
+      btn.style.background = '#28a745';
+      break;
+
+    case 2: // Nur mit RX auswählen
+      allCheckboxes.forEach(cb => {
+        cb.checked = checkboxRxMap.get(cb) === true;
+      });
+      btn.textContent = '❌ Nur ohne rX';
+      btn.style.background = '#ffc107';
+      break;
+
+    case 3: // Nur ohne RX auswählen
+      allCheckboxes.forEach(cb => {
+        cb.checked = checkboxRxMap.get(cb) === false;
+      });
+      btn.textContent = '⭕ Keine Auswahl';
+      btn.style.background = '#6c757d';
+      break;
+  }
+
+  updateSelectionCount();
 }
 
 // rX selection functions

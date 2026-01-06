@@ -1059,7 +1059,11 @@ async function confirmAndSend() {
       const stats = result.statistics;
       const apiMode = result.mode === 'test' ? 'TEST-MODUS' : 'LIVE-MODUS';
 
-      let message = `✅ Erfolgreich versendet (${apiMode})!\n\n`;
+      // Choose icon and title based on success count
+      let icon = stats.successful > 0 ? '✅' : '❌';
+      let title = stats.successful > 0 ? 'Erfolgreich versendet' : 'Versand fehlgeschlagen';
+
+      let message = `${icon} ${title} (${apiMode})!\n\n`;
       message += `Erfolgreich: ${stats.successful}/${stats.total}\n`;
       message += `Fehlgeschlagen: ${stats.failed}\n`;
       message += `Gesamtkosten: ${stats.total_price.toFixed(2)} EUR\n`;

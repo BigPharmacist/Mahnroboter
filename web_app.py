@@ -2541,7 +2541,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
     @app.route("/api/customers/<path:customer_name>", methods=["PUT"])
     def update_customer(customer_name: str) -> Response:
-        """Update customer details (salutation, email, notes, never_remind, bank_debit, print_only flags, and custom name/address)."""
+        """Update customer details (salutation, email, notes, never_remind, bank_debit, print_only, always_rx flags, and custom name/address)."""
         data = request.get_json()
 
         if not data:
@@ -2553,6 +2553,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
         never_remind = 1 if data.get("never_remind", False) else 0
         bank_debit = 1 if data.get("bank_debit", False) else 0
         print_only = 1 if data.get("print_only", False) else 0
+        always_rx = 1 if data.get("always_rx", False) else 0
         clear_address_incomplete = data.get("clear_address_incomplete", False)
         clear_name_needs_review = data.get("clear_name_needs_review", False)
 
@@ -2573,8 +2574,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
                     conn.execute(
                         """
-                        INSERT INTO customer_details (customer_name, salutation, email, notes, never_remind, bank_debit, print_only, hide_before_date, custom_name, custom_street, custom_city, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+                        INSERT INTO customer_details (customer_name, salutation, email, notes, never_remind, bank_debit, print_only, always_rx, hide_before_date, custom_name, custom_street, custom_city, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
                         ON CONFLICT(customer_name) DO UPDATE SET
                             salutation = excluded.salutation,
                             email = excluded.email,
@@ -2582,20 +2583,21 @@ def create_app(config: Optional[dict] = None) -> Flask:
                             never_remind = excluded.never_remind,
                             bank_debit = excluded.bank_debit,
                             print_only = excluded.print_only,
+                            always_rx = excluded.always_rx,
                             hide_before_date = excluded.hide_before_date,
                             custom_name = excluded.custom_name,
                             custom_street = excluded.custom_street,
                             custom_city = excluded.custom_city,
                             updated_at = datetime('now', 'localtime')
                         """,
-                        (customer_name, salutation, email, notes, never_remind, bank_debit, print_only, hide_before_date, custom_name, custom_street, custom_city)
+                        (customer_name, salutation, email, notes, never_remind, bank_debit, print_only, always_rx, hide_before_date, custom_name, custom_street, custom_city)
                     )
                 else:
                     # Partial update - preserve existing custom_* fields (from table save)
                     conn.execute(
                         """
-                        INSERT INTO customer_details (customer_name, salutation, email, notes, never_remind, bank_debit, print_only, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+                        INSERT INTO customer_details (customer_name, salutation, email, notes, never_remind, bank_debit, print_only, always_rx, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
                         ON CONFLICT(customer_name) DO UPDATE SET
                             salutation = excluded.salutation,
                             email = excluded.email,
@@ -2603,9 +2605,10 @@ def create_app(config: Optional[dict] = None) -> Flask:
                             never_remind = excluded.never_remind,
                             bank_debit = excluded.bank_debit,
                             print_only = excluded.print_only,
+                            always_rx = excluded.always_rx,
                             updated_at = datetime('now', 'localtime')
                         """,
-                        (customer_name, salutation, email, notes, never_remind, bank_debit, print_only)
+                        (customer_name, salutation, email, notes, never_remind, bank_debit, print_only, always_rx)
                     )
 
                 # If user wants to clear the address_incomplete flag, update all invoices for this customer
@@ -3014,9 +3017,10 @@ def create_app(config: Optional[dict] = None) -> Flask:
         """Display all collective invoices from the Sammelrechnungen folder."""
         sammelrechnungen_dir = get_data_dir() / "Sammelrechnungen"
 
-        # Fetch LetterXpress status, customer print_only flags, and rX selections from database
+        # Fetch LetterXpress status, customer print_only flags, always_rx flags, and rX selections from database
         letterxpress_status = {}
         customer_print_only = {}
+        customer_always_rx = {}
         rx_selections = {}  # {(filename, month): True}
         try:
             with sqlite3.connect(app.config["DATABASE"]) as conn:
@@ -3060,6 +3064,25 @@ def create_app(config: Optional[dict] = None) -> Flask:
                         custom_no_parens = re.sub(r'[()]', '', row["custom_name"]).strip()
                         custom_no_parens = re.sub(r'\s+', ' ', custom_no_parens)
                         customer_print_only[custom_no_parens] = True
+
+                # Fetch always_rx status for all customers
+                always_rx_rows = conn.execute(
+                    "SELECT customer_name, custom_name, always_rx FROM customer_details WHERE always_rx = 1"
+                ).fetchall()
+                for row in always_rx_rows:
+                    import re
+                    name = row["customer_name"]
+                    customer_always_rx[name] = True
+                    # Also store version without parentheses
+                    name_no_parens = re.sub(r'[()]', '', name).strip()
+                    name_no_parens = re.sub(r'\s+', ' ', name_no_parens)
+                    customer_always_rx[name_no_parens] = True
+                    # Also check custom_name if set
+                    if row["custom_name"]:
+                        customer_always_rx[row["custom_name"]] = True
+                        custom_no_parens = re.sub(r'[()]', '', row["custom_name"]).strip()
+                        custom_no_parens = re.sub(r'\s+', ' ', custom_no_parens)
+                        customer_always_rx[custom_no_parens] = True
 
                 # Fetch rX selections
                 rx_rows = conn.execute(
@@ -3117,8 +3140,11 @@ def create_app(config: Optional[dict] = None) -> Flask:
                         # Check if customer has print_only flag
                         is_print_only = customer_print_only.get(customer_name, False)
 
-                        # Check if rX is selected for this invoice
-                        is_rx_selected = rx_selections.get((normalized_filename, month), False)
+                        # Check if customer has always_rx flag
+                        has_always_rx = customer_always_rx.get(customer_name, False)
+
+                        # Check if rX is selected for this invoice (either explicitly or via always_rx)
+                        is_rx_selected = rx_selections.get((normalized_filename, month), False) or has_always_rx
 
                         # Normalize relative_path for cross-platform compatibility
                         # Use as_posix() to ensure forward slashes for URLs (Windows uses backslashes)
@@ -3133,7 +3159,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
                             "relative_path": normalized_relative_path,
                             "letterxpress_status": lx_status,
                             "print_only": is_print_only,
-                            "rx_selected": is_rx_selected
+                            "rx_selected": is_rx_selected,
+                            "always_rx": has_always_rx
                         })
 
         # Group by month for better display
@@ -5496,6 +5523,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
         root = get_data_dir().resolve()
 
         pdf_writer = PdfWriter()
+        processed_filenames = []  # Track filenames for history logging
 
         for relative_path in paths:
             # Normalize Unicode to NFC for cross-platform compatibility
@@ -5513,12 +5541,45 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 reader = PdfReader(str(target))
                 for page in reader.pages:
                     pdf_writer.add_page(page)
+
+                # Extract filename for history logging
+                filename = target.name
+                if filename not in processed_filenames:
+                    processed_filenames.append(filename)
             except Exception as e:
                 logging.error(f"Error reading PDF {target}: {e}")
                 continue
 
         if len(pdf_writer.pages) == 0:
             abort(404, "Keine gültigen PDFs gefunden")
+
+        # Log print event in invoice history for all invoices in the processed collective invoices
+        try:
+            with sqlite3.connect(app.config["DATABASE"]) as conn:
+                init_db(conn)
+                for filename in processed_filenames:
+                    # Normalize filename
+                    filename = unicodedata.normalize('NFC', filename)
+
+                    # Get all invoices associated with this collective invoice
+                    invoice_rows = conn.execute(
+                        """
+                        SELECT invoice_id FROM collective_invoice_items
+                        WHERE collective_invoice_filename = ?
+                        """,
+                        (filename,)
+                    ).fetchall()
+
+                    # Log print event for each invoice
+                    for row in invoice_rows:
+                        log_invoice_event(conn, row[0], "COLLECTIVE_INVOICE_PRINTED", {
+                            "collective_invoice": filename
+                        })
+
+                conn.commit()
+        except Exception as e:
+            logging.error(f"Error logging print event to invoice history: {e}")
+            # Don't fail the request if history logging fails
 
         # Write merged PDF to memory
         output = BytesIO()
@@ -5909,6 +5970,7 @@ def fetch_all_customers(database_path: str) -> List[Dict]:
                 cd.never_remind,
                 cd.bank_debit,
                 cd.print_only,
+                cd.always_rx,
                 cd.hide_before_date,
                 cd.custom_name,
                 cd.custom_street,
@@ -5917,7 +5979,7 @@ def fetch_all_customers(database_path: str) -> List[Dict]:
                 SUM(i.amount_cents) as total_amount_cents
             FROM invoices i
             LEFT JOIN customer_details cd ON i.customer_name = cd.customer_name
-            GROUP BY i.customer_name, i.customer_address, i.customer_street, i.customer_city, cd.salutation, cd.email, cd.notes, cd.never_remind, cd.bank_debit, cd.print_only, cd.hide_before_date, cd.custom_name, cd.custom_street, cd.custom_city
+            GROUP BY i.customer_name, i.customer_address, i.customer_street, i.customer_city, cd.salutation, cd.email, cd.notes, cd.never_remind, cd.bank_debit, cd.print_only, cd.always_rx, cd.hide_before_date, cd.custom_name, cd.custom_street, cd.custom_city
             ORDER BY i.customer_name
         """
 
@@ -5945,6 +6007,7 @@ def fetch_all_customers(database_path: str) -> List[Dict]:
             "never_remind": row["never_remind"] or 0,
             "bank_debit": row["bank_debit"] or 0,
             "print_only": row["print_only"] or 0,
+            "always_rx": row["always_rx"] or 0,
             "hide_before_date": row["hide_before_date"] or "",
             "address_incomplete": row["address_incomplete"] or 0,
             "name_needs_review": row["name_needs_review"] or 0,

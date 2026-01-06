@@ -220,6 +220,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             never_remind INTEGER DEFAULT 0,
             bank_debit INTEGER DEFAULT 0,
             print_only INTEGER DEFAULT 0,
+            always_rx INTEGER DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
         )
@@ -283,6 +284,14 @@ def init_db(conn: sqlite3.Connection) -> None:
     # Add hide_before_date column if it doesn't exist (for hiding old invoices)
     try:
         conn.execute("ALTER TABLE customer_details ADD COLUMN hide_before_date TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        # Column already exists, that's fine
+        pass
+
+    # Add always_rx column if it doesn't exist (for auto-selecting RX in collective invoices)
+    try:
+        conn.execute("ALTER TABLE customer_details ADD COLUMN always_rx INTEGER DEFAULT 0")
         conn.commit()
     except sqlite3.OperationalError:
         # Column already exists, that's fine
