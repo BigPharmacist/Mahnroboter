@@ -19,12 +19,13 @@ from typing import Iterable, List, Optional, Dict, Tuple, Any
 from collections import defaultdict
 import os
 import smtplib
+import imaplib
 import time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
-from email.utils import encode_rfc2231
+from email.utils import encode_rfc2231, formatdate
 from dotenv import load_dotenv
 import requests
 import re as regex_module
@@ -67,1988 +68,68 @@ from invoice_tracker import (
     process_pdf_file,
     log_invoice_event,
     resolve_pending_import,
-    extract_first_name,
     determine_genders_batch_via_ai,
     validate_customer_names_batch_via_ai,
+)
+from salutation import (
+    extract_first_name,
+    determine_gender_via_ai,
+    determine_salutation_for_customer,
 )
 from letterxpress_client import LetterXpressClient
 
 # Load environment variables
 load_dotenv()
 
-BASE_DIR = Path(__file__).resolve().parent
-
-
-def get_data_dir() -> Path:
-    """
-    Get the data directory from environment variable DATA_DIR.
-    If not set, defaults to BASE_DIR (application directory).
-    Expands ~ to user home directory.
-    """
-    data_dir_env = os.getenv('DATA_DIR')
-    if data_dir_env:
-        # Expand ~ to home directory
-        expanded_path = Path(data_dir_env).expanduser()
-        return expanded_path
-    return BASE_DIR
-
-
-DEFAULT_DB_PATH = get_data_dir() / "invoice_data.db"
-DEFAULT_INVOICE_ROOT = get_data_dir() / "Rechnungen"
-DEFAULT_LIMIT = 1000
-
-ASCII_FALLBACK_MAP = str.maketrans({
-    "ä": "ae",
-    "Ä": "Ae",
-    "ö": "oe",
-    "Ö": "Oe",
-    "ü": "ue",
-    "Ü": "Ue",
-    "ß": "ss",
-})
-
-SORT_COLUMN_MAP = {
-    "date": "ist.invoice_date",
-    # Sort by last name (actual last word of the name, using custom_name if available)
-    # Implemented via a small SQLite UDF registered in fetch_invoices: LAST_WORD(text)
-    # NULLIF converts empty strings to NULL so COALESCE falls back to customer_name
-    "name": "LOWER(LAST_WORD(COALESCE(NULLIF(cd.custom_name, ''), ist.customer_name)))",
-    "address": "LOWER(ist.customer_address)",
-    "number": "COALESCE(ist.invoice_number, '')",
-    "amount": "ist.amount_cents",
-    "status": "ist.status",
-}
-
-
-def normalize_sort_params(sort_by: Optional[str], sort_direction: Optional[str]) -> Tuple[str, str]:
-    """Return safe sort key/direction for invoice listings."""
-    sort_key = (sort_by or "date").lower()
-    if sort_key not in SORT_COLUMN_MAP:
-        sort_key = "date"
-
-    direction = (sort_direction or "desc").lower()
-    if direction not in ("asc", "desc"):
-        direction = "desc"
-
-    return sort_key, direction
-
-
-def sql_last_word(value: Optional[str]) -> str:
-    """SQLite UDF: return the last whitespace-separated word of a string.
-
-    - Treats None/empty as empty string
-    - Collapses multiple spaces
-    - Keeps hyphenated surnames intact (e.g., "Meyer-Lüdenscheidt")
-    """
-    if not value:
-        return ""
-    # Split on any whitespace and take the last non-empty token
-    parts = str(value).strip().split()
-    if not parts:
-        return ""
-    last = parts[-1]
-    # Normalize German umlauts for predictable ordering
-    try:
-        return last.translate(ASCII_FALLBACK_MAP)
-    except Exception:
-        return last
-
-
-@dataclass
-class SMTPConfig:
-    server: str
-    port: int
-    user: str
-    password: str
-    use_tls: bool
-    from_name: str
-
-
-def load_smtp_config() -> SMTPConfig:
-    """Read SMTP settings from the environment."""
-    return SMTPConfig(
-        server=os.getenv('SMTP_SERVER', 'mail.kaeee.de'),
-        port=int(os.getenv('SMTP_PORT', '587')),
-        user=os.getenv('SMTP_USER', 'info@apothekeamdamm.de'),
-        password=os.getenv('SMTP_PASSWORD', ''),
-        use_tls=os.getenv('SMTP_USE_TLS', 'True').lower() == 'true',
-        from_name=os.getenv('SMTP_FROM_NAME', 'Apotheke am Damm'),
-    )
-
-
-def create_smtp_connection(config: SMTPConfig) -> smtplib.SMTP:
-    """Establish and return an authenticated SMTP connection."""
-    if config.use_tls:
-        server = smtplib.SMTP(config.server, config.port, timeout=30)
-        server.ehlo()
-        server.starttls()
-        server.ehlo()
-    else:
-        server = smtplib.SMTP_SSL(config.server, config.port, timeout=30)
-
-    if config.user:
-        server.login(config.user, config.password)
-
-    return server
-
-
-def _ascii_safe_filename(filename: str) -> str:
-    """Return a best-effort ASCII representation of a filename."""
-    translated = filename.translate(ASCII_FALLBACK_MAP)
-    normalized = unicodedata.normalize('NFKD', translated)
-    ascii_name = normalized.encode('ascii', 'ignore').decode('ascii').strip()
-    return ascii_name or "rechnung.pdf"
-
-
-def create_pdf_attachment(invoice_pdf_path: Path) -> Optional[MIMEBase]:
-    """Create a MIME attachment for a PDF with proper filename fallbacks."""
-    if not invoice_pdf_path.exists():
-        logging.warning(f"Invoice PDF not found (skipping): {invoice_pdf_path}")
-        return None
-
-    with open(invoice_pdf_path, 'rb') as f:
-        pdf_attachment = MIMEBase('application', 'pdf')
-        pdf_attachment.set_payload(f.read())
-
-    encoders.encode_base64(pdf_attachment)
-
-    filename = invoice_pdf_path.name
-    ascii_filename = _ascii_safe_filename(filename)
-
-    pdf_attachment.add_header('Content-Disposition', 'attachment', filename=ascii_filename)
-
-    if ascii_filename != filename:
-        encoded_filename = encode_rfc2231(filename, 'utf-8')
-        pdf_attachment.set_param('filename*', encoded_filename, header='Content-Disposition')
-
-    return pdf_attachment
-
-
-def send_invoice_email(to_email: str, customer_name: str, invoice_pdf_path: Path, salutation: str = None) -> bool:
-    """
-    Send an invoice via email with a nice message from the pharmacy.
-
-    Args:
-        to_email: Recipient email address
-        customer_name: Name of the customer
-        invoice_pdf_path: Path to the invoice PDF file
-        salutation: Salutation for the customer (e.g., "Herr", "Frau")
-
-    Returns:
-        True if email was sent successfully, False otherwise
-    """
-    try:
-        smtp_config = load_smtp_config()
-
-        # Create message
-        msg = MIMEMultipart()
-        msg['From'] = f"{smtp_config.from_name} <{smtp_config.user}>"
-        msg['To'] = to_email
-        msg['Subject'] = "Ihre Monatsrechnung"
-
-        # Create email body with a nice message
-        # Determine the greeting based on salutation
-        if salutation and salutation.lower() in ['herr', 'herrn']:
-            greeting = f"Sehr geehrter Herr {customer_name}"
-        elif salutation and salutation.lower() == 'frau':
-            greeting = f"Sehr geehrte Frau {customer_name}"
-        elif salutation and salutation.lower() == 'familie':
-            greeting = f"Sehr geehrte Familie {customer_name}"
-        else:
-            greeting = "Sehr geehrte Damen und Herren"
-
-        email_body = f"""{greeting},
-
-anbei senden wir Ihnen Ihre aktuelle Monatsrechnung.
-
-Wir bedanken uns herzlich für Ihr Vertrauen und Ihre Treue. Sollten Sie Fragen zu Ihrer Rechnung haben, stehen wir Ihnen selbstverständlich gerne zur Verfügung.
-
-Hinweis: Falls Sie einen bequemen Bankeinzug wünschen, sprechen Sie uns gerne an. Wir richten Ihnen gerne ein SEPA-Lastschriftmandat ein.
-
-Mit freundlichen Grüßen
-Ihr Team der Apotheke am Damm
-
----
-Apotheke am Damm
-Matthias Blüm, e.K.
-Am Damm 17, 55232 Alzey
-Tel. : 06731 / 548846
-Fax: 06731 / 548847
-www.apothekeamdamm.de
-
-Der Inhalt dieser Nachricht ist vertraulich. Sollte diese Nachricht nicht für Sie bestimmt sein, löschen Sie diese bitte umgehend. This message was sent confidential. If you are not the recipient, please delete immediately.
-"""
-
-        msg.attach(MIMEText(email_body, 'plain', 'utf-8'))
-
-        # Attach PDF invoice
-        attachment = create_pdf_attachment(invoice_pdf_path)
-        if not attachment:
-            logging.error(f"Invoice PDF not found: {invoice_pdf_path}")
-            return False
-        msg.attach(attachment)
-
-        server = create_smtp_connection(smtp_config)
-        try:
-            server.send_message(msg)
-        finally:
-            try:
-                server.quit()
-            except Exception:
-                logging.warning("Failed to close SMTP connection cleanly")
-
-        logging.info(f"Email sent successfully to {to_email}")
-        return True
-
-    except Exception as e:
-        logging.error(f"Failed to send email to {to_email}: {e}")
-        return False
-
-
-def send_invoices_batch_email(
-    to_email: str,
-    customer_name: str,
-    invoice_pdf_paths: List[Path],
-    month_year: str,
-    salutation: str = None,
-    smtp_connection: Optional[smtplib.SMTP] = None,
-    smtp_config: Optional[SMTPConfig] = None,
-    invoice_list: Optional[List] = None,
-    other_open_invoices: Optional[List] = None,
-) -> bool:
-    """
-    Send multiple invoices via email with a nice message from the pharmacy.
-
-    Args:
-        to_email: Recipient email address
-        customer_name: Name of the customer
-        invoice_pdf_paths: List of paths to invoice PDF files
-        month_year: Month and year string (e.g., "2024-01")
-        salutation: Salutation for the customer (e.g., "Herr", "Frau")
-
-    Returns:
-        True if email was sent successfully, False otherwise
-    """
-    try:
-        config = smtp_config or load_smtp_config()
-
-        # Create message
-        msg = MIMEMultipart()
-        msg['From'] = f"{config.from_name} <{config.user}>"
-        msg['To'] = to_email
-
-        # Format subject - always the same
-        subject = "💊 Ihre aktuelle Monatsrechnung"
-        msg['Subject'] = subject
-
-        invoice_count = len(invoice_pdf_paths)
-
-        # Create email body with a nice message
-        # Determine the greeting based on salutation
-        if salutation and salutation.lower() in ['herr', 'herrn']:
-            greeting = f"Sehr geehrter Herr {customer_name}"
-        elif salutation and salutation.lower() == 'frau':
-            greeting = f"Sehr geehrte Frau {customer_name}"
-        elif salutation and salutation.lower() == 'familie':
-            greeting = f"Sehr geehrte Familie {customer_name}"
-        else:
-            greeting = "Sehr geehrte Damen und Herren"
-
-        # Build invoice list if provided
-        invoice_details = ""
-        if invoice_list and len(invoice_list) > 0:
-            invoice_details = "\n\nFolgende Rechnungen sind im Anhang:\n"
-            for inv in invoice_list:
-                # Format date
-                invoice_date_str = inv.invoice_date if inv.invoice_date else "Unbekannt"
-                if invoice_date_str and len(invoice_date_str) >= 10:
-                    # Convert from ISO format (YYYY-MM-DD) to German format (DD.MM.YYYY)
-                    try:
-                        from datetime import datetime
-                        date_obj = datetime.fromisoformat(invoice_date_str)
-                        invoice_date_str = date_obj.strftime("%d.%m.%Y")
-                    except:
-                        pass
-
-                # Format amount
-                amount_str = f"{inv.amount_cents / 100:.2f} €"
-
-                # Format invoice number
-                inv_number = inv.invoice_number if inv.invoice_number else "ohne Nummer"
-
-                invoice_details += f"  - Rechnung Nr. {inv_number} vom {invoice_date_str}: {amount_str}\n"
-
-        # Build list of other open invoices (not attached)
-        other_open_details = ""
-        if other_open_invoices and len(other_open_invoices) > 0:
-            other_open_details = "\nBitte beachten Sie, dass folgende Rechnungen noch offen sind:\n"
-            total_other_open = 0
-            for inv in other_open_invoices:
-                # Format date
-                inv_date_str = inv.invoice_date if inv.invoice_date else "Unbekannt"
-                if inv_date_str and len(inv_date_str) >= 10:
-                    try:
-                        from datetime import datetime
-                        date_obj = datetime.fromisoformat(inv_date_str)
-                        inv_date_str = date_obj.strftime("%d.%m.%Y")
-                    except:
-                        pass
-                # Format amount
-                inv_amount = inv.amount_cents / 100
-                total_other_open += inv_amount
-                amount_str = f"{inv_amount:.2f} EUR"
-                inv_number = inv.invoice_number if inv.invoice_number else "ohne Nummer"
-                other_open_details += f"  - Rechnung Nr. {inv_number} vom {inv_date_str}: {amount_str}\n"
-            other_open_details += f"\nGesamtbetrag offene Rechnungen: {total_other_open:.2f} EUR\n"
-
-        # Adjust message based on number of invoices
-        if invoice_count == 1:
-            invoice_text = "anbei senden wir Ihnen Ihre aktuelle Rechnung."
-        else:
-            invoice_text = "anbei senden wir Ihnen Ihre aktuellen Rechnungen."
-
-        email_body = f"""{greeting},
-
-{invoice_text}{invoice_details}{other_open_details}
-Wir bedanken uns herzlich für Ihr Vertrauen und Ihre Treue. ✨
-Sollten Sie Fragen zu Ihrer Rechnung haben, stehen wir Ihnen selbstverständlich gerne zur Verfügung.
-
-💬 Nutzen Sie bei Fragen zu Ihren Rechnungen WhatsApp unter: 06731-548846
-
-💡 Hinweis: Falls Sie einen bequemen Bankeinzug wünschen, sprechen Sie uns gerne an.
-Wir richten Ihnen gerne ein SEPA-Lastschriftmandat ein.
-
-Mit freundlichen Grüßen
-Ihr Team der Apotheke am Damm
-
----
-Apotheke am Damm
-Matthias Blüm, e.K.
-Am Damm 17, 55232 Alzey
-Tel. : 06731 / 548846
-Fax: 06731 / 548847
-www.apothekeamdamm.de
-
-Der Inhalt dieser Nachricht ist vertraulich. Sollte diese Nachricht nicht für Sie bestimmt sein, löschen Sie diese bitte umgehend. This message was sent confidential. If you are not the recipient, please delete immediately.
-"""
-
-        msg.attach(MIMEText(email_body, 'plain', 'utf-8'))
-
-        # Attach all PDF invoices
-        for invoice_pdf_path in invoice_pdf_paths:
-            attachment = create_pdf_attachment(invoice_pdf_path)
-            if attachment:
-                msg.attach(attachment)
-
-        connection = smtp_connection
-        owns_connection = False
-        if connection is None:
-            connection = create_smtp_connection(config)
-            owns_connection = True
-
-        try:
-            connection.send_message(msg)
-        finally:
-            if owns_connection and connection:
-                try:
-                    connection.quit()
-                except Exception:
-                    logging.warning("Failed to close SMTP connection cleanly")
-
-        logging.info(f"Batch email sent successfully to {to_email} with {invoice_count} invoices")
-        return True
-
-    except Exception as e:
-        logging.error(f"Failed to send batch email to {to_email}: {e}")
-        return False
-
-
-def extract_first_name(customer_name: str) -> Optional[str]:
-    """
-    Extract the first name from a customer name.
-    Handles various formats like "Max Mustermann", "Mustermann, Max", etc.
-
-    Args:
-        customer_name: Full customer name
-
-    Returns:
-        First name or None if extraction fails
-    """
-    if not customer_name:
-        return None
-
-    # Remove common titles
-    name_clean = customer_name.strip()
-    for title in ["Dr.", "Prof.", "Dipl.-Ing.", "Ing."]:
-        name_clean = name_clean.replace(title, "").strip()
-
-    # Try different patterns
-    # Pattern 1: "Vorname Nachname" or "Vorname Mittelname Nachname"
-    parts = name_clean.split()
-    if len(parts) >= 2:
-        # First part is likely the first name
-        return parts[0].strip()
-
-    # Pattern 2: "Nachname, Vorname"
-    if "," in name_clean:
-        parts = name_clean.split(",")
-        if len(parts) >= 2:
-            return parts[1].strip().split()[0] if parts[1].strip() else None
-
-    # If only one part, return it
-    if len(parts) == 1:
-        return parts[0].strip()
-
-    return None
-
-
-def determine_gender_via_ai(first_name: str) -> Optional[str]:
-    """
-    Use Nebius AI (Meta Llama 70B) to determine the gender based on first name.
-
-    Args:
-        first_name: The first name to analyze
-
-    Returns:
-        "Herr" for male, "Frau" for female, or None if uncertain
-    """
-    try:
-        api_key = os.getenv('NEBIUS_API_KEY')
-        if not api_key:
-            logging.error("NEBIUS_API_KEY not found in environment")
-            return None
-
-        # Nebius Studio API endpoint (OpenAI-compatible)
-        url = "https://api.studio.nebius.com/v1/chat/completions"
-
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-
-        # Prompt for the AI
-        prompt = f"""Bestimme das Geschlecht des Vornamens "{first_name}".
-Antworte NUR mit einem dieser Wörter:
-- "männlich" wenn der Name typischerweise männlich ist
-- "weiblich" wenn der Name typischerweise weiblich ist
-- "unbekannt" wenn du dir nicht sicher bist
-
-Antwort:"""
-
-        payload = {
-            "model": "meta-llama/Llama-3.3-70B-Instruct",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            "temperature": 0.1,
-            "max_tokens": 10
-        }
-
-        response = requests.post(url, headers=headers, json=payload, timeout=10)
-        response.raise_for_status()
-
-        data = response.json()
-        ai_response = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip().lower()
-
-        logging.info(f"AI response for '{first_name}': {ai_response}")
-
-        # Parse response
-        if "männlich" in ai_response or "male" in ai_response:
-            return "Herr"
-        elif "weiblich" in ai_response or "female" in ai_response:
-            return "Frau"
-        else:
-            return None
-
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Failed to call Nebius AI for '{first_name}': {e}")
-        return None
-    except Exception as e:
-        logging.error(f"Error determining gender for '{first_name}': {e}")
-        return None
-
-
-def determine_salutation_for_customer(customer_name: str) -> Optional[str]:
-    """
-    Determine salutation for a customer by extracting first name and using AI.
-
-    Args:
-        customer_name: Full customer name
-
-    Returns:
-        "Herr", "Frau", or None
-    """
-    first_name = extract_first_name(customer_name)
-    if not first_name:
-        logging.warning(f"Could not extract first name from: {customer_name}")
-        return None
-
-    return determine_gender_via_ai(first_name)
-
-
-def get_customer_custom_address(conn: sqlite3.Connection, customer_name: str) -> Optional[Tuple[str, str, str]]:
-    """
-    Get custom address for a customer from customer_details table.
-
-    Args:
-        conn: Database connection
-        customer_name: Customer name to lookup
-
-    Returns:
-        Tuple of (custom_name, custom_street, custom_city) if custom address exists, None otherwise
-    """
-    cursor = conn.execute(
-        "SELECT custom_name, custom_street, custom_city FROM customer_details WHERE customer_name = ?",
-        (customer_name,)
-    )
-    row = cursor.fetchone()
-
-    if row and row[0] and row[1] and row[2]:
-        # All custom fields must be present
-        return (row[0], row[1], row[2])
-
-    return None
-
-
-def draw_justified_paragraph(c, text, x, y, width, font_size=10, font_name='Helvetica'):
-    """
-    Draw a justified paragraph at given position.
-    Returns the new y position after the paragraph.
-    """
-    style = ParagraphStyle(
-        'Justified',
-        fontName=font_name,
-        fontSize=font_size,
-        alignment=TA_JUSTIFY,
-        leading=font_size * 1.2
-    )
-
-    p = Paragraph(text, style)
-    w, h = p.wrap(width, 1000)  # wrap to given width
-    p.drawOn(c, x, y - h)
-    return y - h  # return new y position
-
-
-def draw_modern_footer(c, left_margin, right_margin, footer_y, include_bank_details=True):
-    """
-    Draw a modern, 3-column footer with balanced layout.
-
-    Args:
-        c: Canvas object
-        left_margin: Left margin
-        right_margin: Right margin
-        footer_y: Y position for footer
-        include_bank_details: If True, include bank details (for Sammelrechnung)
-    """
-    from reportlab.lib.colors import HexColor
-
-    primary_color = HexColor("#123C69")
-    black = HexColor("#000000")
-    gray = HexColor("#666666")
-
-    # Trennlinie (gestrichelt, elegant)
-    c.setStrokeColor(HexColor("#cccccc"))
-    c.setDash(2, 2)
-    c.line(left_margin, footer_y + 15*mm, right_margin, footer_y + 15*mm)
-    c.setDash()
-
-    y_start = footer_y + 2*mm
-
-    # === 3-SPALTEN-LAYOUT (gleichmäßig verteilt) ===
-    page_width = right_margin - left_margin
-    col_width = page_width / 3
-
-    # Spalte 1: LINKS (Adresse)
-    col1_x = left_margin
-
-    # Spalte 2: MITTE (Kontakt)
-    col2_x = left_margin + col_width
-
-    # Spalte 3: RECHTS (Bank oder Rechtliches)
-    col3_x = left_margin + (col_width * 2)
-
-    # === SPALTE 1: ADRESSE (LINKS) ===
-    y = y_start
-    c.setFillColor(primary_color)
-    c.setFont("Helvetica-Bold", 9)
-    c.drawString(col1_x, y, "Apotheke am Damm")
-
-    y -= 4*mm
-    c.setFillColor(gray)
-    c.setFont("Helvetica", 7)
-    c.drawString(col1_x, y, "Inh. Matthias Blüm, e.K.")
-
-    y -= 3.5*mm
-    c.drawString(col1_x, y, "Am Damm 17")
-
-    y -= 3.5*mm
-    c.drawString(col1_x, y, "55232 Alzey")
-
-    # === SPALTE 2: KONTAKT (MITTE) ===
-    y = y_start
-    c.setFillColor(primary_color)
-    c.setFont("Helvetica-Bold", 9)
-    c.drawString(col2_x, y, "Kontakt")
-
-    y -= 4*mm
-    c.setFillColor(gray)
-    c.setFont("Helvetica", 7)
-    c.drawString(col2_x, y, "Tel: 06731-548846")
-
-    y -= 3.5*mm
-    c.drawString(col2_x, y, "Fax: 06731-548847")
-
-    y -= 3.5*mm
-    c.drawString(col2_x, y, "info@apothekeamdamm.de")
-
-    y -= 3.5*mm
-    c.drawString(col2_x, y, "WhatsApp: 06731-548846")
-
-    # === SPALTE 3: BANK ODER RECHTLICHES (RECHTS) ===
-    y = y_start
-
-    if include_bank_details:
-        # Bei Sammelrechnung: Bankverbindung
-        c.setFillColor(primary_color)
-        c.setFont("Helvetica-Bold", 9)
-        c.drawString(col3_x, y, "Bankverbindung")
-
-        y -= 4*mm
-        c.setFillColor(gray)
-        c.setFont("Helvetica", 7)
-        c.drawString(col3_x, y, "Sparkasse Worms-Alzey-Ried")
-
-        y -= 3.5*mm
-        c.setFont("Helvetica", 6)
-        c.drawString(col3_x, y, "IBAN: DE51 5535 0010 0033 7173 83")
-
-        y -= 3*mm
-        c.drawString(col3_x, y, "BIC: MALADE51WOR")
-    else:
-        # Bei Mahnungen: Rechtliches
-        c.setFillColor(primary_color)
-        c.setFont("Helvetica-Bold", 9)
-        c.drawString(col3_x, y, "Rechtliches")
-
-        y -= 4*mm
-        c.setFillColor(gray)
-        c.setFont("Helvetica", 7)
-        c.drawString(col3_x, y, "HRA 31710")
-
-        y -= 3.5*mm
-        c.drawString(col3_x, y, "Amtsgericht Mainz")
-
-        y -= 3.5*mm
-        c.drawString(col3_x, y, "USt-IdNr. DE814983365")
-
-
-# Legacy function names for backwards compatibility
-def draw_footer(c, left_margin, width, footer_y):
-    """Legacy wrapper for draw_modern_footer (Sammelrechnungen)."""
-    right_margin = width - 25*mm
-    draw_modern_footer(c, left_margin, right_margin, footer_y, include_bank_details=True)
-
-
-def draw_reminder_footer(c, left_margin, width, footer_y):
-    """Legacy wrapper for draw_modern_footer (Mahnungen)."""
-    right_margin = width - 25*mm
-    draw_modern_footer(c, left_margin, right_margin, footer_y, include_bank_details=False)
-
-
-def check_page_break(c, current_y, needed_space, left_margin, width, height, is_reminder=False):
-    """
-    Check if page break is needed and handle it.
-
-    Args:
-        c: ReportLab canvas
-        current_y: Current Y position
-        needed_space: Space needed for the next content block
-        left_margin: Left margin
-        width: Page width
-        height: Page height
-        is_reminder: If True, use reminder footer style
-
-    Returns:
-        New Y position (either current or reset to top of new page)
-    """
-    FOOTER_SPACE = 120  # Space reserved for footer (footer at 80, needs ~40 pixels)
-    MIN_Y = FOOTER_SPACE
-
-    if current_y - needed_space < MIN_Y:
-        # Draw footer on current page
-        if is_reminder:
-            draw_reminder_footer(c, left_margin, width, 80)
-        else:
-            draw_footer(c, left_margin, width, 80)
-
-        # Start new page
-        c.showPage()
-
-        # Reset to top of page (leaving space for header if needed)
-        return height - 100
-
-    return current_y
-
-
-def create_cover_letter_pdf(
-    customer_name: str,
-    customer_address: str,
-    current_month_invoices: List[Dict],
-    older_open_invoices: List[Dict],
-    salutation: Optional[str] = None
-) -> bytes:
-    """
-    Create a modern cover letter PDF for Sammelrechnungen.
-
-    Args:
-        customer_name: Name of the customer
-        customer_address: Full address of the customer
-        current_month_invoices: List of invoices from the latest month
-        older_open_invoices: List of older open invoices
-        salutation: Salutation for the customer
-
-    Returns:
-        PDF bytes
-    """
-    from reportlab.lib.colors import HexColor
-
-    buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
-
-    # Colors
-    primary_color = HexColor("#123C69")
-    black = HexColor("#000000")
-    box_bg = HexColor("#f0f4f8")
-
-    # Margins (DIN 5008 konform - ADJUSTED)
-    left_margin = 25 * mm  # ADJUSTED: +5mm nach rechts (war 20mm)
-    right_margin = width - 25 * mm
-
-    # === KOPFBEREICH (MODERN) ===
-    y_pos = height - 25*mm
-
-    c.setFillColor(primary_color)
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(left_margin, y_pos, "Apotheke am Damm")
-
-    y_pos -= 6*mm
-    c.setFillColor(black)
-    c.setFont("Helvetica", 9)
-    c.drawString(left_margin, y_pos, "Am Damm 17 | 55232 Alzey")
-
-    # Rücksendeadresse (klein, DIN 5008)
-    # DIN 5008: 44mm von oben - ADJUSTED: +4mm nach unten
-    return_address_y = height - (48 * mm)
-    c.setFont("Helvetica", 8)
-    c.drawString(left_margin, return_address_y, "Apotheke am Damm, Am Damm 17, 55232 Alzey")
-
-    # === EMPFÄNGERADRESSE (DIN 5008: 66-88mm) ===
-    # DIN 5008: 66-88mm von oben - ADJUSTED: +10mm nach unten (76mm)
-    recipient_y_start = height - (76 * mm)
-
-    # Parse address
-    address_lines = customer_address.split('\n') if '\n' in customer_address else customer_address.split(',')
-    address_lines = [line.strip() for line in address_lines if line.strip()]
-
-    # Greeting line
-    if salutation and salutation.lower() in ['herr', 'herrn']:
-        greeting_line = f"Herr {customer_name}"
-    elif salutation and salutation.lower() == 'frau':
-        greeting_line = f"Frau {customer_name}"
-    elif salutation and salutation.lower() == 'familie':
-        greeting_line = f"Familie {customer_name}"
-    else:
-        greeting_line = customer_name
-
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(left_margin, recipient_y_start, greeting_line)
-
-    # Address lines
-    c.setFont("Helvetica", 11)
-    line_height = 4.5 * mm
-    for i, line in enumerate(address_lines):
-        c.drawString(left_margin, recipient_y_start - ((i + 1) * line_height), line)
-
-    # === DATUM ===
-    date_y = height - (106 * mm)
-    today = datetime.now().strftime("%d.%m.%Y")
-    c.setFont("Helvetica", 10)
-    c.drawRightString(right_margin, date_y, f"Alzey, {today}")
-
-    # === BETREFFZEILE (MIT FARBE) ===
-    subject_y = date_y - 20
-    c.setFillColor(primary_color)
-    c.setFont("Helvetica-Bold", 14)
-
-    # Month/year from first invoice
-    if current_month_invoices:
-        first_date = datetime.strptime(current_month_invoices[0]['date'], '%Y-%m-%d')
-        month_year = first_date.strftime("%m.%Y")
-        if len(current_month_invoices) == 1:
-            subject_text = f"Ihre Monatsrechnung {month_year}"
-        else:
-            subject_text = f"Ihre Monatsrechnungen {month_year}"
-    else:
-        subject_text = "Ihre Monatsrechnungen"
-
-    c.drawString(left_margin, subject_y, subject_text)
-
-    # === ANREDE ===
-    content_y = subject_y - 25
-    c.setFillColor(black)
-    c.setFont("Helvetica", 10)
-
-    if salutation and salutation.lower() in ['herr', 'herrn']:
-        salutation_text = f"Sehr geehrter Herr {customer_name.split()[-1]},"
-    elif salutation and salutation.lower() == 'frau':
-        salutation_text = f"Sehr geehrte Frau {customer_name.split()[-1]},"
-    elif salutation and salutation.lower() == 'familie':
-        salutation_text = f"Sehr geehrte Familie {customer_name.split()[-1]},"
-    else:
-        salutation_text = "Sehr geehrte Damen und Herren,"
-
-    c.drawString(left_margin, content_y, salutation_text)
-
-    # === HAUPTTEXT ===
-    content_y -= 20
-    if len(current_month_invoices) == 1:
-        c.drawString(left_margin, content_y, "anbei erhalten Sie Ihre aktuelle Rechnung:")
-    else:
-        c.drawString(left_margin, content_y, "anbei erhalten Sie Ihre aktuellen Rechnungen:")
-
-    # === TABELLE MIT MODERNEM STYLING ===
-    content_y -= 25
-
-    # Table header (mit Farbe)
-    c.setFillColor(primary_color)
-    c.setFont("Helvetica-Bold", 10)
-
-    col1_x = left_margin + 10
-    col2_x = left_margin + 110
-    col3_x = right_margin - 70
-
-    c.drawString(col1_x, content_y, "Rechnungs-Nr.")
-    c.drawString(col2_x, content_y, "Datum")
-    c.drawRightString(col3_x, content_y, "Betrag")
-
-    content_y -= 3
-    c.setStrokeColor(primary_color)
-    c.setLineWidth(1.5)
-    c.line(left_margin, content_y, right_margin - 60, content_y)
-    content_y -= 12
-
-    # Table rows
-    c.setFillColor(black)
-    c.setFont("Helvetica", 10)
-    c.setStrokeColor(black)
-    c.setLineWidth(1)
-
-    total_current = 0.0
-    for inv in current_month_invoices:
-        inv_date_str = datetime.strptime(inv['date'], '%Y-%m-%d').strftime('%d.%m.%Y')
-        c.drawString(col1_x, content_y, inv['number'])
-        c.drawString(col2_x, content_y, inv_date_str)
-        c.drawRightString(col3_x, content_y, f"{inv['amount']:.2f} €")
-        total_current += inv['amount']
-        content_y -= 14
-
-    # === GESAMTSUMME IN BOX ===
-    content_y -= 5
-    box_height = 15
-    c.setFillColor(box_bg)
-    c.rect(left_margin, content_y - box_height, right_margin - left_margin - 60, box_height, stroke=0, fill=1)
-
-    c.setFillColor(primary_color)
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(col1_x, content_y - 10, "Gesamtsumme:")
-    c.drawRightString(col3_x, content_y - 10, f"{total_current:.2f} €")
-
-    content_y -= box_height + 10
-
-    # === ÄLTERE RECHNUNGEN (FALLS VORHANDEN) ===
-    if older_open_invoices:
-        content_y -= 20
-        c.setFillColor(black)
-        c.setFont("Helvetica", 10)
-        c.drawString(left_margin, content_y, "Bitte beachten Sie außerdem folgende noch offenen Rechnungen:")
-
-        content_y -= 20
-
-        # Table header
-        c.setFillColor(primary_color)
-        c.setFont("Helvetica-Bold", 10)
-        c.drawString(col1_x, content_y, "Rechnungs-Nr.")
-        c.drawString(col2_x, content_y, "Datum")
-        c.drawRightString(col3_x, content_y, "Betrag")
-
-        content_y -= 3
-        c.setStrokeColor(primary_color)
-        c.line(left_margin, content_y, right_margin - 60, content_y)
-        content_y -= 12
-
-        # Rows
-        c.setFillColor(black)
-        c.setFont("Helvetica", 10)
-        c.setStrokeColor(black)
-
-        total_older = 0.0
-        for inv in older_open_invoices:
-            inv_date_str = datetime.strptime(inv['date'], '%Y-%m-%d').strftime('%d.%m.%Y')
-            c.drawString(col1_x, content_y, inv['number'])
-            c.drawString(col2_x, content_y, inv_date_str)
-            c.drawRightString(col3_x, content_y, f"{inv['amount']:.2f} €")
-            total_older += inv['amount']
-            content_y -= 14
-
-        # Sum box
-        content_y -= 5
-        c.setFillColor(box_bg)
-        c.rect(left_margin, content_y - box_height, right_margin - left_margin - 60, box_height, stroke=0, fill=1)
-
-        c.setFillColor(primary_color)
-        c.setFont("Helvetica-Bold", 11)
-        c.drawString(col1_x, content_y - 10, "Summe offener Rechnungen:")
-        c.drawRightString(col3_x, content_y - 10, f"{total_older:.2f} €")
-
-        content_y -= box_height + 10
-
-    # === HINWEIS ZUZAHLUNGSBEFREIUNG ===
-    content_y -= 25
-    c.setFillColor(primary_color)
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(left_margin, content_y, "Hinweis bei Zuzahlungsbefreiung:")
-
-    content_y -= 15
-    text_width = right_margin - left_margin
-    c.setFillColor(black)
-    text = ("Trotz Befreiung von der Rezeptgebühr ist der Rechnungsbetrag fällig, da das Rezept/die Rezepte vom "
-            "Arzt als \"gebührenpflichtig\" gekennzeichnet wurde(n). Mit dieser Rechnung und einem "
-            "Zahlungsnachweis erhalten Sie den Betrag von Ihrer Krankenkasse erstattet. Bitte reichen Sie uns "
-            "ebenfalls eine Kopie des Befreiungsausweises ein. Für Rückfragen helfen wir Ihnen natürlich gerne "
-            "weiter.")
-    content_y = draw_justified_paragraph(c, text, left_margin, content_y, text_width, font_size=9)
-
-    # === SCHLUSS ===
-    content_y -= 20
-    c.setFont("Helvetica", 10)
-    c.drawString(left_margin, content_y, "Wir bedanken uns herzlich für Ihr Vertrauen und Ihre Treue.")
-
-    content_y -= 20
-    c.drawString(left_margin, content_y, "Mit freundlichen Grüßen")
-    content_y -= 10
-    c.setFillColor(primary_color)
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(left_margin, content_y, "Ihr Team der Apotheke am Damm")
-
-    # === FOOTER ===
-    footer_y = 20*mm
-    draw_modern_footer(c, left_margin, right_margin, footer_y, include_bank_details=True)
-
-    c.save()
-    buffer.seek(0)
-    return buffer.getvalue()
-
-
-def create_reminder_pdf(
-    customer_name: str,
-    customer_address: str,
-    invoices: List[Dict],
-    reminder_level: int,
-    salutation: Optional[str] = None
-) -> bytes:
-    """
-    Create a modern payment reminder or dunning letter PDF.
-
-    Args:
-        customer_name: Name of the customer
-        customer_address: Full address of the customer
-        invoices: List of invoices with date, number, and amount
-        reminder_level: 0 = Zahlungserinnerung, 1 = 1. Mahnung, 2 = 2. Mahnung
-        salutation: Salutation for the customer
-
-    Returns:
-        PDF bytes
-    """
-    from reportlab.lib.colors import HexColor
-
-    buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
-
-    # Colors
-    primary_color = HexColor("#123C69")
-    black = HexColor("#000000")
-    box_bg = HexColor("#f0f4f8")
-    warning_color = HexColor("#dc3545")  # Red for level 2
-    warning_bg = HexColor("#fff3cd")  # Yellow warning box
-
-    # Margins (DIN 5008 konform - ADJUSTED)
-    left_margin = 25 * mm  # ADJUSTED: +5mm nach rechts (war 20mm)
-    right_margin = width - 25 * mm
-
-    # === KOPFBEREICH (MODERN) ===
-    y_pos = height - 25*mm
-
-    c.setFillColor(primary_color)
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(left_margin, y_pos, "Apotheke am Damm")
-
-    y_pos -= 6*mm
-    c.setFillColor(black)
-    c.setFont("Helvetica", 9)
-    c.drawString(left_margin, y_pos, "Am Damm 17 | 55232 Alzey | Tel: 06731-548846")
-
-    # Rücksendeadresse (klein, DIN 5008)
-    # DIN 5008: 44mm von oben - ADJUSTED: +4mm nach unten
-    return_address_y = height - (48 * mm)
-    c.setFont("Helvetica", 8)
-    c.drawString(left_margin, return_address_y, "Apotheke am Damm, Am Damm 17, 55232 Alzey")
-
-    # === EMPFÄNGERADRESSE (DIN 5008: 66-88mm) ===
-    # DIN 5008: 66-88mm von oben - ADJUSTED: +10mm nach unten (76mm)
-    recipient_y_start = height - (76 * mm)
-
-    # Parse address
-    address_lines = customer_address.split('\n') if '\n' in customer_address else customer_address.split(',')
-    address_lines = [line.strip() for line in address_lines if line.strip()]
-
-    # Greeting line
-    if salutation and salutation.lower() in ['herr', 'herrn']:
-        greeting_line = f"Herr {customer_name}"
-    elif salutation and salutation.lower() == 'frau':
-        greeting_line = f"Frau {customer_name}"
-    elif salutation and salutation.lower() == 'familie':
-        greeting_line = f"Familie {customer_name}"
-    else:
-        greeting_line = customer_name
-
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(left_margin, recipient_y_start, greeting_line)
-
-    # Address lines
-    c.setFont("Helvetica", 11)
-    line_height = 4.5 * mm
-    for i, line in enumerate(address_lines):
-        c.drawString(left_margin, recipient_y_start - ((i + 1) * line_height), line)
-
-    # === DATUM ===
-    date_y = height - (106 * mm)
-    today = datetime.now().strftime("%d.%m.%Y")
-    c.setFont("Helvetica", 10)
-    c.drawRightString(right_margin, date_y, f"Alzey, {today}")
-
-    # === BETREFFZEILE (MIT FARBE - ROT FÜR LETZTE MAHNUNG) ===
-    subject_y = date_y - 20
-
-    level_names = {
-        0: "Zahlungserinnerung",
-        1: "1. Mahnung",
-        2: "2. Mahnung - LETZTE ZAHLUNGSAUFFORDERUNG"
-    }
-    subject_text = level_names.get(reminder_level, "Zahlungserinnerung")
-
-    # Color based on level
-    if reminder_level == 2:
-        c.setFillColor(warning_color)
-    else:
-        c.setFillColor(primary_color)
-
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(left_margin, subject_y, subject_text)
-
-    # === ANREDE ===
-    content_y = subject_y - 25
-    c.setFillColor(black)
-    c.setFont("Helvetica", 10)
-
-    if salutation and salutation.lower() in ['herr', 'herrn']:
-        salutation_text = f"Sehr geehrter Herr {customer_name.split()[-1]},"
-    elif salutation and salutation.lower() == 'frau':
-        salutation_text = f"Sehr geehrte Frau {customer_name.split()[-1]},"
-    elif salutation and salutation.lower() == 'familie':
-        salutation_text = f"Sehr geehrte Familie {customer_name.split()[-1]},"
-    else:
-        salutation_text = "Sehr geehrte Damen und Herren,"
-
-    c.drawString(left_margin, content_y, salutation_text)
-
-    # === HAUPTTEXT (ABHÄNGIG VON MAHNSTUFE) ===
-    content_y -= 20
-
-    if reminder_level == 0:
-        text_lines = [
-            "bei der Durchsicht unserer Buchhaltung ist uns aufgefallen, dass der",
-            "Rechnungsbetrag für die unten aufgeführten Rechnungen noch nicht bei uns",
-            "eingegangen ist. Wir bitten Sie, die offenen Beträge innerhalb von 14 Tagen",
-            "auf unser Konto zu überweisen."
-        ]
-    elif reminder_level == 1:
-        text_lines = [
-            "trotz unserer Zahlungserinnerung haben wir bisher keinen Zahlungseingang",
-            "für die unten aufgeführten Rechnungen feststellen können. Wir fordern Sie",
-            "hiermit auf, den ausstehenden Betrag innerhalb von 10 Tagen nach Erhalt",
-            "dieses Schreibens zu überweisen."
-        ]
-    else:  # Level 2
-        # Warning box for level 2
-        box_height = 45
-        box_width = right_margin - left_margin
-        c.setFillColor(warning_bg)
-        c.rect(left_margin, content_y - box_height, box_width, box_height, stroke=0, fill=1)
-
-        c.setFillColor(warning_color)
-        c.setFont("Helvetica-Bold", 11)
-        c.drawString(left_margin + 5, content_y - 10, "⚠ LETZTE ZAHLUNGSAUFFORDERUNG")
-
-        c.setFillColor(black)
-        c.setFont("Helvetica", 10)
-        c.drawString(left_margin + 5, content_y - 25, "Trotz mehrmaliger Zahlungsaufforderungen ist der ausstehende")
-        c.drawString(left_margin + 5, content_y - 37, "Rechnungsbetrag bis heute nicht bei uns eingegangen.")
-
-        content_y -= box_height + 5
-        text_lines = []
-
-    for line in text_lines:
-        c.drawString(left_margin, content_y, line)
-        content_y -= 12
-
-    # === TABELLE MIT MODERNEM STYLING ===
-    content_y -= 15
-
-    # Table header (mit Farbe)
-    c.setFillColor(primary_color)
-    c.setFont("Helvetica-Bold", 10)
-
-    col1_x = left_margin + 10
-    col2_x = left_margin + 110
-    col3_x = right_margin - 70
-
-    c.drawString(col1_x, content_y, "Rechnungs-Nr.")
-    c.drawString(col2_x, content_y, "Datum")
-    c.drawRightString(col3_x, content_y, "Betrag")
-
-    content_y -= 3
-    c.setStrokeColor(primary_color)
-    c.setLineWidth(1.5)
-    c.line(left_margin, content_y, right_margin - 60, content_y)
-    content_y -= 12
-
-    # Table rows
-    c.setFillColor(black)
-    c.setFont("Helvetica", 10)
-    c.setStrokeColor(black)
-    c.setLineWidth(1)
-
-    total_amount = 0.0
-    for inv in invoices:
-        inv_date_str = datetime.strptime(inv['date'], '%Y-%m-%d').strftime('%d.%m.%Y')
-        c.drawString(col1_x, content_y, inv['number'])
-        c.drawString(col2_x, content_y, inv_date_str)
-        c.drawRightString(col3_x, content_y, f"{inv['amount']:.2f} €")
-        total_amount += inv['amount']
-        content_y -= 14
-
-    # Add reminder fees (Mahngebühren) if applicable
-    reminder_fee = 0.0
-    if reminder_level == 1:
-        reminder_fee = 5.0  # 5€ for 1. Mahnung
-    elif reminder_level == 2:
-        reminder_fee = 10.0  # 10€ for 2. Mahnung
-
-    if reminder_fee > 0:
-        c.drawString(col1_x, content_y, "Mahngebühren")
-        c.drawString(col2_x, content_y, "")
-        c.drawRightString(col3_x, content_y, f"{reminder_fee:.2f} €")
-        total_amount += reminder_fee
-        content_y -= 14
-
-    # === GESAMTSUMME IN BOX ===
-    content_y -= 5
-    box_height = 15
-
-    # Use warning color for level 2
-    if reminder_level == 2:
-        c.setFillColor(warning_bg)
-    else:
-        c.setFillColor(box_bg)
-
-    c.rect(left_margin, content_y - box_height, right_margin - left_margin - 60, box_height, stroke=0, fill=1)
-
-    if reminder_level == 2:
-        c.setFillColor(warning_color)
-    else:
-        c.setFillColor(primary_color)
-
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(col1_x, content_y - 10, "Offener Gesamtbetrag:")
-    c.drawRightString(col3_x, content_y - 10, f"{total_amount:.2f} €")
-
-    content_y -= box_height + 15
-
-    # === BANKVERBINDUNG IN INFO-BOX ===
-    c.setFillColor(box_bg)
-    box_height = 35
-    c.rect(left_margin, content_y - box_height, right_margin - left_margin, box_height, stroke=0, fill=1)
-
-    c.setFillColor(primary_color)
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(left_margin + 5, content_y - 10, "Unsere Bankverbindung:")
-
-    c.setFillColor(black)
-    c.setFont("Helvetica", 9)
-    c.drawString(left_margin + 5, content_y - 22, "Sparkasse Worms-Alzey-Ried")
-    c.drawString(left_margin + 5, content_y - 32, "IBAN: DE51 5535 0010 0033 7173 83  •  BIC: MALADE51WOR")
-
-    content_y -= box_height + 15
-
-    # === SCHLUSS ===
-    c.setFont("Helvetica", 10)
-    if reminder_level < 2:
-        c.drawString(left_margin, content_y, "Für Rückfragen stehen wir Ihnen gerne zur Verfügung.")
-        content_y -= 15
-        c.drawString(left_margin, content_y, "Mit freundlichen Grüßen")
-    else:
-        c.setFont("Helvetica-Bold", 10)
-        c.drawString(left_margin, content_y, "Bitte überweisen Sie den Betrag umgehend, um weitere Maßnahmen zu vermeiden.")
-        content_y -= 15
-        c.setFont("Helvetica", 10)
-        c.drawString(left_margin, content_y, "Mit freundlichen Grüßen")
-
-    content_y -= 10
-    c.setFillColor(primary_color)
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(left_margin, content_y, "Ihr Team der Apotheke am Damm")
-
-    # === FOOTER ===
-    footer_y = 20*mm
-    draw_modern_footer(c, left_margin, right_margin, footer_y, include_bank_details=False)
-
-    # === SEITE 2: ZUSÄTZLICHE INFORMATIONEN ===
-    c.showPage()
-
-    # Co-payment exemption notice (at top of page 2)
-    info_y = height - 150
-    c.setFillColor(primary_color)
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(left_margin, info_y, "Hinweis bei Zuzahlungsbefreiung:")
-
-    info_y -= 15
-    text_width = right_margin - left_margin
-    c.setFillColor(black)
-    text = ("Trotz Befreiung von der Rezeptgebühr ist der Rechnungsbetrag fällig, da das Rezept/die Rezepte vom Arzt als "
-            "\"gebührenpflichtig\" gekennzeichnet wurde(n). Mit dieser Rechnung und einem Zahlungsnachweis erhalten Sie den "
-            "Betrag von Ihrer Krankenkasse erstattet. Bitte reichen Sie uns ebenfalls eine Kopie des Befreiungsausweises ein. "
-            "Für Rückfragen helfen wir Ihnen natürlich gerne weiter.")
-    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=9)
-
-    # Title
-    info_y -= 30
-    c.setFillColor(primary_color)
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(left_margin, info_y, "Weitere Informationen und Hinweise")
-
-    info_y -= 25
-
-    # Paragraph 1
-    c.setFillColor(black)
-    text = "Sollten Sie den Betrag bereits überwiesen haben, betrachten Sie dieses Schreiben bitte als gegenstandslos. In diesem Fall bitten wir um Entschuldigung für die Unannehmlichkeiten."
-    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=9)
-    info_y -= 12
-
-    # Paragraph 2
-    text = "Falls Sie Fragen zu den Rechnungspositionen haben oder in einer finanziellen Notlage sind, bitten wir Sie, sich umgehend mit uns in Verbindung zu setzen. Wir sind gerne bereit, mit Ihnen eine Ratenzahlungsvereinbarung zu treffen."
-    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=9)
-    info_y -= 12
-
-    # Paragraph 3
-    text = "Bitte beachten Sie, dass bei Nichtzahlung weitere Kosten auf Sie zukommen können, einschließlich Zinsen, Anwaltskosten und Gerichtsgebühren. Diese können den ursprünglichen Rechnungsbetrag erheblich erhöhen."
-    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=9)
-    info_y -= 12
-
-    # Paragraph 4
-    text = "Wir möchten Sie darauf hinweisen, dass ein gerichtliches Mahnverfahren auch negative Auswirkungen auf Ihre Bonität haben kann. Dies kann zukünftige Geschäftsbeziehungen und Kreditwürdigkeitsprüfungen beeinflussen."
-    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=9)
-    info_y -= 12
-
-    # Paragraph 5
-    text = "Ihre Gesundheit liegt uns am Herzen, und wir möchten unsere gute Geschäftsbeziehung fortführen. Daher bitten wir Sie eindringlich, den offenen Betrag zu begleichen oder sich mit uns in Verbindung zu setzen, um eine Lösung zu finden."
-    info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=9)
-
-    # Footer on page 2
-    draw_modern_footer(c, left_margin, right_margin, 20*mm, include_bank_details=False)
-
-    c.save()
-    buffer.seek(0)
-    return buffer.getvalue()
-
-
-def create_sepa_mandate_pdf(
-    customer_name: str,
-    customer_address: str
-) -> bytes:
-    """
-    Create a SEPA-Lastschriftmandat PDF with customer data filled in.
-
-    Args:
-        customer_name: Name of the customer
-        customer_address: Full address of the customer
-
-    Returns:
-        PDF bytes
-    """
-    buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
-
-    # Parse customer address
-    address_lines = customer_address.split('\n') if '\n' in customer_address else customer_address.split(',')
-    address_lines = [line.strip() for line in address_lines if line.strip()]
-
-    # Extract street and city from address
-    street = address_lines[0] if len(address_lines) > 0 else ""
-    city = address_lines[1] if len(address_lines) > 1 else ""
-
-    # Startposition oben
-    y_pos = height - 40*mm
-
-    # Überschrift - SEPA-Basis-Lastschriftmandat
-    c.setFont("Helvetica-Bold", 12)
-    c.rect(20*mm, y_pos - 8*mm, 170*mm, 10*mm, stroke=1, fill=0)
-    c.drawString(22*mm, y_pos - 5*mm, "SEPA-Basis-Lastschriftmandat")
-
-    y_pos -= 15*mm
-
-    # Zahlungsempfänger Box
-    c.setFont("Helvetica", 7)
-    c.drawString(20*mm, y_pos, "Name und Anschrift des Zahlungsempfängers (Gläubiger)")
-
-    y_pos -= 7*mm
-    c.rect(20*mm, y_pos - 20*mm, 90*mm, 25*mm, stroke=1, fill=0)
-
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(22*mm, y_pos - 5*mm, "Apotheke am Damm")
-    c.setFont("Helvetica", 10)
-    c.drawString(22*mm, y_pos - 10*mm, "Am Damm 17")
-    c.drawString(22*mm, y_pos - 15*mm, "55232 Alzey")
-
-    y_pos -= 28*mm
-
-    # Gläubiger-ID und Mandatsreferenz
-    c.rect(20*mm, y_pos - 8*mm, 90*mm, 10*mm, stroke=1, fill=0)
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(22*mm, y_pos - 5*mm, "DE45ZZZ00002778112")
-
-    c.rect(112*mm, y_pos - 8*mm, 78*mm, 10*mm, stroke=1, fill=0)
-    c.setFont("Helvetica-Bold", 9)
-    c.drawString(114*mm, y_pos - 5*mm, "Wird separat mitgeteilt!")
-
-    c.setFont("Helvetica", 6)
-    c.drawString(22*mm, y_pos - 11*mm, "Gläubiger-Identifikationsnummer")
-    c.drawString(114*mm, y_pos - 11*mm, "Mandatsreferenz")
-
-    y_pos -= 18*mm
-
-    # Ermächtigungstext
-    c.setFont("Helvetica", 7)
-    text_de = [
-        "Ich ermächtige (Wir ermächtigen) die Apotheke am Damm,",
-        "Zahlungen von meinem (unserem) Konto mittels Lastschrift",
-        "einzuziehen. Zugleich weise ich mein (weisen wir unser)",
-        "Kreditinstitut an, die von der Apotheke am Damm auf mein",
-        "(unser) Konto gezogenen Lastschriften einzulösen.",
-        "",
-        "Hinweis: Ich kann (wir können) innerhalb von acht",
-        "Wochen, beginnend mit dem Belastungsdatum, die",
-        "Erstattung des belasteten Betrages verlangen. Es gelten",
-        "dabei die mit meinem (unserem) Kreditinstitut vereinbarten",
-        "Bedingungen."
-    ]
-
-    y_text = y_pos
-    for line in text_de:
-        c.drawString(22*mm, y_text, line)
-        y_text -= 3.5*mm
-
-    y_pos -= 45*mm
-
-    # Checkboxen
-    c.setFont("Helvetica", 8)
-    # Wiederkehrende Zahlung
-    c.rect(22*mm, y_pos - 3*mm, 4*mm, 4*mm, stroke=1, fill=0)
-    c.drawString(28*mm, y_pos - 2*mm, "Wiederkehrende Zahlung")
-
-    # Einmalige Zahlung
-    c.rect(112*mm, y_pos - 3*mm, 4*mm, 4*mm, stroke=1, fill=0)
-    c.drawString(118*mm, y_pos - 2*mm, "Einmalige Zahlung")
-
-    y_pos -= 10*mm
-
-    # Zahlungspflichtiger Felder (mit Daten gefüllt)
-    c.setFont("Helvetica", 7)
-
-    # Name
-    c.drawString(20*mm, y_pos, "Zahlungspflichtiger")
-    y_pos -= 3*mm
-    c.rect(20*mm, y_pos - 5*mm, 170*mm, 7*mm, stroke=1, fill=0)
-    c.setFont("Helvetica", 10)
-    c.drawString(22*mm, y_pos - 3.5*mm, customer_name)
-    c.setFont("Helvetica", 7)
-    y_pos -= 10*mm
-
-    # Straße und Hausnummer
-    c.drawString(20*mm, y_pos, "Straße und Hausnummer")
-    y_pos -= 3*mm
-    c.rect(20*mm, y_pos - 5*mm, 170*mm, 7*mm, stroke=1, fill=0)
-    c.setFont("Helvetica", 10)
-    c.drawString(22*mm, y_pos - 3.5*mm, street)
-    c.setFont("Helvetica", 7)
-    y_pos -= 10*mm
-
-    # PLZ und Ort
-    c.drawString(20*mm, y_pos, "PLZ und Ort")
-    y_pos -= 3*mm
-    c.rect(20*mm, y_pos - 5*mm, 170*mm, 7*mm, stroke=1, fill=0)
-    c.setFont("Helvetica", 10)
-    c.drawString(22*mm, y_pos - 3.5*mm, city)
-    c.setFont("Helvetica", 7)
-    y_pos -= 10*mm
-
-    # Land
-    c.drawString(20*mm, y_pos, "Land")
-    y_pos -= 3*mm
-    c.rect(20*mm, y_pos - 5*mm, 170*mm, 7*mm, stroke=1, fill=0)
-    y_pos -= 10*mm
-
-    # IBAN
-    c.drawString(20*mm, y_pos, "IBAN")
-    y_pos -= 3*mm
-    c.rect(20*mm, y_pos - 5*mm, 170*mm, 7*mm, stroke=1, fill=0)
-    y_pos -= 10*mm
-
-    # SWIFT BIC
-    c.drawString(20*mm, y_pos, "SWIFT BIC")
-    y_pos -= 3*mm
-    c.rect(20*mm, y_pos - 5*mm, 170*mm, 7*mm, stroke=1, fill=0)
-    y_pos -= 20*mm
-
-    # Unterschriftenbereich
-    c.setFont("Helvetica", 7)
-
-    # Ort
-    c.line(20*mm, y_pos, 70*mm, y_pos)
-    c.drawString(20*mm, y_pos - 3*mm, "Ort")
-
-    # Datum
-    c.line(90*mm, y_pos, 125*mm, y_pos)
-    c.drawString(90*mm, y_pos - 3*mm, "Datum")
-
-    # Unterschrift
-    c.line(140*mm, y_pos, 190*mm, y_pos)
-    c.drawString(140*mm, y_pos - 3*mm, "Unterschrift(en)")
-
-    c.save()
-    buffer.seek(0)
-    return buffer.getvalue()
-
-
-def create_invoice_history_pdf(
-    customer_name: str,
-    customer_street: str,
-    customer_city: str,
-    invoice_number: str,
-    invoice_date: str,
-    amount_eur: float,
-    events: list
-) -> bytes:
-    """
-    Create a printable PDF of the invoice history/timeline.
-
-    Args:
-        customer_name: Name of the customer
-        customer_street: Street address of the customer
-        customer_city: City (PLZ + Ort) of the customer
-        invoice_number: Invoice number
-        invoice_date: Invoice date string
-        amount_eur: Invoice amount in EUR
-        events: List of event dicts with event_type, timestamp, metadata
-
-    Returns:
-        PDF bytes
-    """
-    from reportlab.lib.colors import HexColor
-
-    # Apotheken-Daten
-    APOTHEKE_NAME = "Apotheke am Damm"
-    APOTHEKE_STRASSE = "Am Damm 17"
-    APOTHEKE_PLZ_ORT = "55232 Alzey"
-    APOTHEKE_TELEFON = "06731-548846"
-    APOTHEKE_EMAIL = "info@apothekeamdamm.de"
-
-    # Event type translations and explanations
-    event_translations = {
-        'IMPORT': ('Import', 'Rechnung wurde aus Importdatei eingelesen'),
-        'EMAIL_SENT': ('E-Mail versendet', 'Rechnung wurde per E-Mail an Kunden gesendet'),
-        'COLLECTIVE_INVOICE_CREATED': ('Sammelrechnung erstellt', 'Rechnung wurde in Sammelrechnung aufgenommen'),
-        'COLLECTIVE_INVOICE_SENT': ('Sammelrechnung versendet', 'Sammelrechnung wurde an Versanddienstleister uebertragen'),
-        'REMINDER_CREATED': ('Mahnung erstellt', 'Mahnschreiben wurde als PDF erstellt'),
-        'REMINDER_SENT': ('Mahnung versendet', 'Mahnschreiben wurde an Versanddienstleister uebertragen'),
-        'MARKED_UNCOLLECTIBLE': ('Als uneinbringbar markiert', 'Rechnung wurde als uneinbringbar gekennzeichnet'),
-        'UNMARKED_UNCOLLECTIBLE': ('Uneinbringbar-Status aufgehoben', 'Uneinbringbar-Markierung wurde entfernt')
-    }
-
-    reminder_level_names = {
-        0: 'Zahlungserinnerung',
-        1: '1. Mahnung',
-        2: '2. Mahnung'
-    }
-
-    buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
-
-    # Farben
-    primary_color = HexColor("#123C69")
-    black = HexColor("#000000")
-    gray = HexColor("#666666")
-    light_gray = HexColor("#f5f5f5")
-    green = HexColor("#4CAF50")
-
-    # Startposition oben
-    y_pos = height - 25*mm
-
-    # ===== KOPFBEREICH =====
-    c.setFillColor(primary_color)
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(20*mm, y_pos, APOTHEKE_NAME)
-
-    y_pos -= 6*mm
-    c.setFillColor(black)
-    c.setFont("Helvetica", 9)
-    c.drawString(20*mm, y_pos, f"{APOTHEKE_STRASSE} | {APOTHEKE_PLZ_ORT}")
-
-    y_pos -= 18*mm
-
-    # ===== UEBERSCHRIFT =====
-    c.setFillColor(primary_color)
-    c.setFont("Helvetica-Bold", 14)
-    c.drawCentredString(width/2, y_pos, "Rechnungs-Verlauf")
-
-    y_pos -= 15*mm
-
-    # ===== RECHNUNGS-INFO BOX =====
-    box_height = 32*mm
-    c.setFillColor(light_gray)
-    c.rect(20*mm, y_pos - box_height + 5*mm, 170*mm, box_height, stroke=0, fill=1)
-
-    info_y = y_pos
-    c.setFillColor(black)
-
-    # Zeile 1: Rechnungsnummer (prominent)
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(25*mm, info_y, f"Rechnungsnr.: {invoice_number or '-'}")
-
-    # Rechte Spalte: Datum und Betrag
-    c.setFont("Helvetica-Bold", 9)
-    c.drawString(130*mm, info_y, "Datum:")
-    c.drawString(130*mm, info_y - 5*mm, "Betrag:")
-    c.setFont("Helvetica", 9)
-    c.drawString(150*mm, info_y, invoice_date or "-")
-    c.drawString(150*mm, info_y - 5*mm, f"{amount_eur:.2f} EUR")
-
-    # Zeile 2-4: Rechnungsempfaenger mit Anschrift
-    c.setFont("Helvetica-Bold", 9)
-    c.drawString(25*mm, info_y - 8*mm, "Rechnungsempfaenger:")
-    c.setFont("Helvetica", 9)
-    c.drawString(25*mm, info_y - 13*mm, customer_name or "-")
-    if customer_street:
-        c.drawString(25*mm, info_y - 18*mm, customer_street)
-    if customer_city:
-        c.drawString(25*mm, info_y - 23*mm, customer_city)
-
-    y_pos -= box_height + 10*mm
-
-    # ===== VERLAUF-UEBERSCHRIFT =====
-    c.setFillColor(primary_color)
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(20*mm, y_pos, "Chronologischer Verlauf")
-
-    y_pos -= 10*mm
-
-    # ===== TIMELINE (kompaktes, modernes Design) =====
-    if not events:
-        c.setFillColor(gray)
-        c.setFont("Helvetica-Oblique", 9)
-        c.drawString(25*mm, y_pos, "Noch keine Ereignisse fuer diese Rechnung.")
-    else:
-        # Sortiere Events chronologisch (aelteste zuerst fuer Druck)
-        sorted_events = sorted(events, key=lambda e: e.get('timestamp', ''))
-
-        # Timeline-Konstanten
-        dot_x = 22*mm
-        dot_radius = 2*mm
-        content_x = 28*mm
-        line_height = 12*mm  # Kompakter Abstand zwischen Events
-
-        for i, event in enumerate(sorted_events):
-            event_type = event.get('event_type', '')
-            timestamp = event.get('timestamp', '')
-            metadata = event.get('metadata', {})
-
-            # Format timestamp
-            try:
-                from datetime import datetime
-                dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-                formatted_time = dt.strftime('%d.%m.%Y, %H:%M')
-            except:
-                formatted_time = timestamp
-
-            # Get translation and explanation
-            translation, explanation = event_translations.get(event_type, (event_type, ''))
-
-            # Check if we need a new page
-            if y_pos < 40*mm:
-                c.showPage()
-                y_pos = height - 25*mm
-                c.setFillColor(primary_color)
-                c.setFont("Helvetica-Bold", 12)
-                c.drawString(20*mm, y_pos, "Rechnungs-Verlauf (Fortsetzung)")
-                y_pos -= 12*mm
-
-            # Draw timeline line FIRST (unter dem Dot, für saubere Optik)
-            if i < len(sorted_events) - 1:
-                c.setStrokeColor(HexColor("#e0e0e0"))
-                c.setLineWidth(1.5)
-                c.line(dot_x, y_pos - dot_radius - 1*mm, dot_x, y_pos - line_height + dot_radius + 1*mm)
-
-            # Draw timeline dot (kleiner, mit Outline für modernen Look)
-            c.setStrokeColor(HexColor("#3d8c40"))
-            c.setFillColor(green)
-            c.setLineWidth(1.5)
-            c.circle(dot_x, y_pos, dot_radius, stroke=1, fill=1)
-
-            # Erste Zeile: Event-Name + Timestamp (horizontal, kompakt)
-            c.setFillColor(black)
-            c.setFont("Helvetica-Bold", 9)
-            c.drawString(content_x, y_pos + 1*mm, translation)
-
-            # Timestamp direkt nach dem Event-Namen
-            name_width = c.stringWidth(translation, "Helvetica-Bold", 9)
-            c.setFillColor(HexColor("#888888"))
-            c.setFont("Helvetica", 8)
-            c.drawString(content_x + name_width + 3*mm, y_pos + 1*mm, f"({formatted_time})")
-
-            # Metadata details als zweite Zeile (falls vorhanden)
-            details = []
-            if metadata.get('email'):
-                details.append(f"E-Mail: {metadata['email']}")
-            if metadata.get('letterxpress_job_id'):
-                details.append(f"LetterXpress Job: #{metadata['letterxpress_job_id']}")
-            if metadata.get('price') is not None:
-                details.append(f"Kosten: {metadata['price']:.2f} EUR")
-            if metadata.get('reminder_level') is not None:
-                level_name = reminder_level_names.get(metadata['reminder_level'], str(metadata['reminder_level']))
-                details.append(f"Stufe: {level_name}")
-
-            # Dateiname separat (kann lang sein)
-            filename = metadata.get('filename')
-
-            extra_lines = 0
-            if details:
-                c.setFillColor(HexColor("#666666"))
-                c.setFont("Helvetica", 7)
-                c.drawString(content_x, y_pos - 4*mm, " · ".join(details))
-                extra_lines += 1
-
-            if filename:
-                c.setFillColor(HexColor("#666666"))
-                c.setFont("Helvetica", 7)
-                c.drawString(content_x, y_pos - 4*mm - (extra_lines * 3.5*mm), f"Datei: {filename}")
-                extra_lines += 1
-
-            y_pos -= line_height + (extra_lines - 1) * 3.5*mm if extra_lines > 1 else line_height
-
-    # ===== FUSSBEREICH (feste Position am unteren Rand) =====
-    footer_y = 15*mm
-
-    # Trennlinie
-    c.setStrokeColor(HexColor("#cccccc"))
-    c.setDash(2, 2)
-    c.line(20*mm, footer_y + 8*mm, width - 20*mm, footer_y + 8*mm)
-    c.setDash()
-    c.setStrokeColor(black)
-
-    # Fusszeile
-    c.setFillColor(primary_color)
-    c.setFont("Helvetica-Bold", 9)
-    c.drawString(20*mm, footer_y, APOTHEKE_NAME)
-
-    c.setFillColor(black)
-    c.setFont("Helvetica", 8)
-    footer_text = f"{APOTHEKE_STRASSE}, {APOTHEKE_PLZ_ORT}  |  Tel: {APOTHEKE_TELEFON}  |  {APOTHEKE_EMAIL}"
-    c.drawString(65*mm, footer_y, footer_text)
-
-    # Druckdatum rechts unten
-    c.setFillColor(gray)
-    c.setFont("Helvetica", 7)
-    from datetime import datetime
-    c.drawRightString(190*mm, footer_y - 5*mm, f"Erstellt am {datetime.now().strftime('%d.%m.%Y, %H:%M')}")
-
-    c.save()
-    buffer.seek(0)
-    return buffer.getvalue()
-
-
-def create_email_consent_form_pdf(customer_name: str) -> bytes:
-    """
-    Create an email consent form PDF with customer name filled in.
-
-    Args:
-        customer_name: Name of the customer
-
-    Returns:
-        PDF bytes
-    """
-    from reportlab.lib.colors import HexColor
-
-    # Apotheken-Daten
-    APOTHEKE_NAME = "Apotheke am Damm"
-    APOTHEKE_STRASSE = "Am Damm 17"
-    APOTHEKE_PLZ_ORT = "55232 Alzey"
-    APOTHEKE_TELEFON = "06731-548846"
-    APOTHEKE_EMAIL = "info@apothekeamdamm.de"
-
-    buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
-
-    # Farben
-    primary_color = HexColor("#123C69")
-    black = HexColor("#000000")
-
-    # Startposition oben
-    y_pos = height - 25*mm
-
-    # ===== KOPFBEREICH =====
-    c.setFillColor(primary_color)
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(20*mm, y_pos, APOTHEKE_NAME)
-
-    y_pos -= 6*mm
-    c.setFillColor(black)
-    c.setFont("Helvetica", 9)
-    c.drawString(20*mm, y_pos, f"{APOTHEKE_STRASSE} | {APOTHEKE_PLZ_ORT}")
-
-    y_pos -= 18*mm
-
-    # ===== ÜBERSCHRIFT =====
-    c.setFillColor(primary_color)
-    c.setFont("Helvetica", 11)
-    c.drawCentredString(width/2, y_pos, "Ihre Rechnungen direkt per E-Mail")
-    y_pos -= 8*mm
-    c.setFont("Helvetica-Bold", 14)
-    c.drawCentredString(width/2, y_pos, "Einwilligung zum elektronischen Rechnungsversand")
-
-    y_pos -= 15*mm
-
-    # ===== EINLEITUNGSTEXT =====
-    c.setFillColor(black)
-    c.setFont("Helvetica", 10)
-
-    intro_text = [
-        "Um Ressourcen zu schonen und Ihnen Ihre Rechnungen schneller zukommen zu lassen,",
-        "bieten wir Ihnen gerne die Möglichkeit an, Ihre Rechnungen per E-Mail zu erhalten."
-    ]
-
-    for line in intro_text:
-        c.drawString(20*mm, y_pos, line)
-        y_pos -= 5*mm
-
-    y_pos -= 8*mm
-
-    # ===== VORTEILE-BOX =====
-    box_height = 30*mm
-    c.setFillColor(HexColor("#f0f4f8"))
-    c.rect(20*mm, y_pos - box_height + 5*mm, 170*mm, box_height, stroke=0, fill=1)
-
-    c.setFillColor(primary_color)
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(25*mm, y_pos, "Ihre Vorteile:")
-
-    y_pos -= 7*mm
-    c.setFillColor(black)
-    c.setFont("Helvetica", 10)
-
-    vorteile = [
-        "Schnellerer Erhalt Ihrer Rechnungen",
-        "Umweltfreundlich durch Papiereinsparung",
-        "Übersichtliche digitale Ablage möglich"
-    ]
-
-    for vorteil in vorteile:
-        c.drawString(30*mm, y_pos, f"• {vorteil}")
-        y_pos -= 5.5*mm
-
-    y_pos -= 10*mm
-
-    # ===== DATENSCHUTZINFORMATION =====
-    c.setFillColor(primary_color)
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(20*mm, y_pos, "Datenschutzinformation")
-
-    y_pos -= 7*mm
-    c.setFillColor(black)
-    c.setFont("Helvetica", 9)
-
-    datenschutz_text = [
-        "Mit Ihrer Einwilligung verarbeiten wir Ihre E-Mail-Adresse zum Zweck des Versands",
-        "von Rechnungen. Die Rechtsgrundlage für diese Verarbeitung ist Ihre Einwilligung",
-        "gemäß Art. 6 Abs. 1 lit. a DSGVO.",
-        "",
-        "Diese Einwilligung ist freiwillig. Sie können sie jederzeit ohne Angabe von Gründen",
-        f"widerrufen, z.B. per E-Mail an {APOTHEKE_EMAIL} oder schriftlich an unsere",
-        "Adresse. Der Widerruf berührt nicht die Rechtmäßigkeit der bis dahin erfolgten",
-        "Verarbeitung. Nach einem Widerruf erhalten Sie Ihre Rechnungen wieder per Post."
-    ]
-
-    for line in datenschutz_text:
-        c.drawString(20*mm, y_pos, line)
-        y_pos -= 4.5*mm
-
-    y_pos -= 12*mm
-
-    # ===== EINWILLIGUNGSERKLÄRUNG =====
-    c.setStrokeColor(black)
-    c.rect(20*mm, y_pos - 3*mm, 5*mm, 5*mm, stroke=1, fill=0)
-
-    c.setFont("Helvetica-Bold", 10)
-    einwilligung_text = f"Ja, ich willige ein, dass die {APOTHEKE_NAME} mir Rechnungen per E-Mail zusendet."
-    c.drawString(28*mm, y_pos, einwilligung_text)
-
-    y_pos -= 18*mm
-
-    # ===== EINGABEFELDER =====
-    c.setFont("Helvetica", 9)
-    field_width = 120*mm
-
-    # Name, Vorname
-    c.drawString(20*mm, y_pos, "Name, Vorname:")
-    c.line(55*mm, y_pos - 1*mm, 55*mm + field_width, y_pos - 1*mm)
-    # Kundenname vorausfüllen
-    if customer_name:
-        c.setFont("Helvetica", 10)
-        c.drawString(56*mm, y_pos, customer_name)
-        c.setFont("Helvetica", 9)
-    y_pos -= 12*mm
-
-    # E-Mail-Adresse
-    c.drawString(20*mm, y_pos, "E-Mail-Adresse:")
-    c.line(55*mm, y_pos - 1*mm, 55*mm + field_width, y_pos - 1*mm)
-    y_pos -= 12*mm
-
-    # Ort, Datum
-    c.drawString(20*mm, y_pos, "Ort, Datum:")
-    c.line(45*mm, y_pos - 1*mm, 45*mm + 60*mm, y_pos - 1*mm)
-    y_pos -= 18*mm
-
-    # Unterschrift
-    c.drawString(20*mm, y_pos, "Unterschrift:")
-    c.line(45*mm, y_pos - 1*mm, 45*mm + 80*mm, y_pos - 1*mm)
-
-    y_pos -= 30*mm
-
-    # ===== FUSSBEREICH (feste Position am unteren Rand) =====
-    footer_y = 20*mm  # Feste Position vom unteren Rand
-
-    # Trennlinie
-    c.setStrokeColor(HexColor("#cccccc"))
-    c.setDash(2, 2)
-    c.line(20*mm, footer_y + 10*mm, width - 20*mm, footer_y + 10*mm)
-    c.setDash()
-    c.setStrokeColor(black)
-
-    # Fußzeile horizontal ueber die gesamte Breite
-    c.setFillColor(primary_color)
-    c.setFont("Helvetica-Bold", 9)
-    c.drawString(20*mm, footer_y, APOTHEKE_NAME)
-
-    c.setFillColor(black)
-    c.setFont("Helvetica", 8)
-    # Alle Infos in einer Zeile mit Trennzeichen
-    footer_text = f"{APOTHEKE_STRASSE}, {APOTHEKE_PLZ_ORT}  |  Tel: {APOTHEKE_TELEFON}  |  {APOTHEKE_EMAIL}"
-    c.drawString(65*mm, footer_y, footer_text)
-
-    c.save()
-    buffer.seek(0)
-    return buffer.getvalue()
-
-
-@dataclass
-class InvoiceRow:
-    id: int
-    invoice_number: Optional[str]
-    invoice_date: str
-    customer_name: str
-    customer_address: str  # Deprecated: use customer_street and customer_city
-    amount_cents: int
-    status: str  # 'open' or 'paid'
-    last_seen_snapshot: str  # Last snapshot where this invoice appeared
-    first_seen_snapshot: str  # First snapshot where this invoice appeared
-    file_path: Optional[str] = None  # Path in the latest/last snapshot
-    in_collective_invoice: bool = False  # Whether this invoice is in a collective invoice
-    uncollectible: int = 0  # Whether this invoice is marked as uncollectible
-    customer_street: Optional[str] = None
-    customer_city: Optional[str] = None
-    address_incomplete: bool = False  # Whether the address was auto-completed
-    name_needs_review: bool = False  # Whether customer name failed AI validation
-
-    @property
-    def amount_eur(self) -> float:
-        return self.amount_cents / 100
-
-    @property
-    def is_paid(self) -> bool:
-        return self.status == 'paid'
-
-
-@dataclass
-class ReminderInfo:
-    """Information about reminders for an invoice."""
-    invoice_id: int
-    last_reminder_level: Optional[int]  # 0=Zahlungserinnerung, 1=1. Mahnung, 2=2. Mahnung
-    last_reminder_date: Optional[str]
-    letterexpress_status: Optional[str]
-    has_reminders: bool = False
-
-
-@dataclass
-class InvoiceWithReminder(InvoiceRow):
-    """Extended invoice row with reminder information."""
-    months_open: int = 0
-    recommended_level: Optional[int] = None  # Next recommended reminder level
-    last_reminder_level: Optional[int] = None
-    last_reminder_date: Optional[str] = None
-    letterexpress_status: Optional[str] = None
-    has_reminders: bool = False
-    reminder_pdf_path: Optional[str] = None
-    invoices_in_group: int = 1  # Number of invoices in the same reminder group (same PDF)
-
-    @property
-    def reminder_status_text(self) -> str:
-        """Human-readable reminder status."""
-        if not self.has_reminders:
-            if self.months_open >= 4:
-                return "2. Mahnung fällig (Einschreiben)"
-            elif self.months_open >= 3:
-                return "Zahlungserinnerung empfohlen"
-            else:
-                return "Keine Mahnung erforderlich"
-        else:
-            level_names = {0: "Zahlungserinnerung", 1: "1. Mahnung", 2: "2. Mahnung"}
-            return f"{level_names.get(self.last_reminder_level, 'Unbekannt')} gesendet"
+from config import (
+    BASE_DIR,
+    get_data_dir,
+    DEFAULT_DB_PATH,
+    DEFAULT_INVOICE_ROOT,
+    DEFAULT_LIMIT,
+    ASCII_FALLBACK_MAP,
+    SORT_COLUMN_MAP,
+    normalize_sort_params,
+    sql_last_word,
+    SMTPConfig,
+    load_smtp_config,
+    IMAPConfig,
+    load_imap_config,
+)
+
+
+from mailer import (
+    create_smtp_connection,
+    save_email_to_sent_folder,
+    create_pdf_attachment,
+    send_invoice_email,
+    send_invoices_batch_email,
+)
+
+
+from pdf_documents import (
+    get_customer_custom_address,
+    create_cover_letter_pdf,
+    create_reminder_pdf,
+    create_sepa_mandate_pdf,
+    create_invoice_history_pdf,
+    create_email_consent_form_pdf,
+)
+
+
+from data_access import (
+    InvoiceRow,
+    ReminderInfo,
+    InvoiceWithReminder,
+    clamp_limit,
+    fetch_invoices,
+    row_from_sql,
+    group_by_customer,
+    calculate_months_open,
+    get_recommended_reminder_level,
+    fetch_all_customers,
+    fetch_invoices_with_reminders,
+)
 
 
 def create_app(config: Optional[dict] = None) -> Flask:
@@ -2066,8 +147,12 @@ def create_app(config: Optional[dict] = None) -> Flask:
     if not logging.getLogger().handlers:
         logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-        # Add file handler for errors
-        file_handler = logging.FileHandler("import_errors.log", encoding="utf-8")
+        # Add rotating file handler for errors (2 MB x 3 backups) so the
+        # log cannot grow unbounded.
+        from logging.handlers import RotatingFileHandler
+        file_handler = RotatingFileHandler(
+            "import_errors.log", maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8"
+        )
         file_handler.setLevel(logging.ERROR)
         file_handler.setFormatter(
             logging.Formatter("%(asctime)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
@@ -2763,14 +848,19 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     batch_size = 20
                     success_count = 0
                     processed = 0
+                    empty_batches = 0  # batches where the AI returned no usable result
+                    total_batches = 0
 
                     for i in range(0, len(first_names), batch_size):
                         batch = first_names[i:i + batch_size]
+                        total_batches += 1
 
                         yield f"data: {json.dumps({'type': 'progress', 'processed': processed, 'total': total, 'batch': batch})}\n\n"
 
                         # Call batch AI
                         results = determine_genders_batch_via_ai(batch)
+                        if not any(results.values()):
+                            empty_batches += 1
 
                         # Update database for each result
                         for first_name, salutation in results.items():
@@ -2794,7 +884,14 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
                         conn.commit()
 
-                    yield f"data: {json.dumps({'type': 'complete', 'total': total, 'success': success_count, 'message': f'{success_count} Anreden ermittelt'})}\n\n"
+                    # If every batch came back empty the AI is most likely
+                    # unreachable (e.g. invalid/expired NEBIUS_API_KEY) rather
+                    # than all names genuinely being unknown.
+                    if success_count == 0 and total_batches > 0 and empty_batches == total_batches:
+                        logging.error("Salutation AI returned no results for any batch — check NEBIUS_API_KEY / Nebius availability")
+                        yield f"data: {json.dumps({'type': 'complete', 'total': total, 'success': 0, 'ai_failed': True, 'message': 'KI nicht erreichbar – keine Anreden ermittelt. Bitte NEBIUS_API_KEY prüfen.'})}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'type': 'complete', 'total': total, 'success': success_count, 'message': f'{success_count} Anreden ermittelt'})}\n\n"
 
             except Exception as e:
                 logging.error(f"Error in batch salutations stream: {e}")
@@ -3668,6 +1765,182 @@ def create_app(config: Optional[dict] = None) -> Flask:
             logging.error(f"Fehler beim Kombinieren der PDFs: {e}")
             return jsonify({"error": f"Fehler beim Erstellen des PDFs: {str(e)}"}), 500
 
+    @app.route("/api/preview-invoices-email", methods=["GET"])
+    def preview_invoices_email() -> Response:
+        """Preview what emails would be sent (DRY RUN - no actual sending)."""
+        import json
+        from datetime import datetime
+
+        query = request.args.get("q", "").strip()
+        limit = clamp_limit(request.args.get("limit"), app.config["MAX_LIMIT"])
+        time_filter = request.args.get("time", "all")
+        status_filter = request.args.get("status", "open")
+        email_filter = request.args.get("email", "all")
+        uncollectible_filter = request.args.get("uncollectible", "hide")
+        collective_filter = request.args.get("collective", "all")
+        invoice_date_from = request.args.get("invoice_date_from", "")
+        invoice_date_to = request.args.get("invoice_date_to", "")
+        from_month = request.args.get("from_month", "")
+        to_month = request.args.get("to_month", "")
+
+        try:
+            invoices = fetch_invoices(app.config["DATABASE"], query, limit, time_filter, status_filter, from_month, to_month, email_filter, uncollectible_filter, collective_filter, invoice_date_from=invoice_date_from, invoice_date_to=invoice_date_to)
+
+            if not invoices:
+                return jsonify({"success": False, "error": "Keine Rechnungen gefunden"}), 404
+
+            # Group invoices by customer
+            grouped_invoices = defaultdict(list)
+            for invoice in invoices:
+                grouped_invoices[invoice.customer_name].append(invoice)
+
+            previews = []
+
+            with sqlite3.connect(app.config["DATABASE"]) as conn:
+                conn.row_factory = sqlite3.Row
+                init_db(conn)
+
+                for customer_name, invoice_list in grouped_invoices.items():
+                    # Get customer email and salutation
+                    customer_row = conn.execute(
+                        "SELECT email, salutation FROM customer_details WHERE customer_name = ?",
+                        (customer_name,)
+                    ).fetchone()
+
+                    if not customer_row or not customer_row["email"]:
+                        previews.append({
+                            "customer_name": customer_name,
+                            "error": "Keine E-Mail-Adresse hinterlegt",
+                            "invoices_to_send": len(invoice_list)
+                        })
+                        continue
+
+                    customer_email = customer_row["email"]
+                    customer_salutation = customer_row["salutation"] if "salutation" in customer_row.keys() else None
+
+                    # Get other open invoices for this customer (not in current filter)
+                    current_invoice_ids = {inv.id for inv in invoice_list}
+                    other_open_cursor = conn.execute(
+                        """
+                        SELECT i.id, i.invoice_number, i.invoice_date, i.amount_cents
+                        FROM invoices i
+                        JOIN invoice_snapshots isnap ON i.id = isnap.invoice_id
+                        JOIN snapshots s ON isnap.snapshot_id = s.id
+                        WHERE i.customer_name = ?
+                          AND s.snapshot_date = (SELECT MAX(snapshot_date) FROM snapshots)
+                          AND i.uncollectible = 0
+                        ORDER BY i.invoice_date ASC
+                        """,
+                        (customer_name,)
+                    )
+
+                    # Collect other open invoices (not being sent in this email)
+                    other_open_invoices = []
+                    for row in other_open_cursor.fetchall():
+                        if row["id"] not in current_invoice_ids:
+                            other_open_invoices.append({
+                                "invoice_number": row["invoice_number"],
+                                "invoice_date": row["invoice_date"],
+                                "amount_eur": round(row["amount_cents"] / 100.0, 2)
+                            })
+
+                    # Generate email body preview
+                    if customer_salutation and customer_salutation.lower() in ['herr', 'herrn']:
+                        greeting = f"Sehr geehrter Herr {customer_name}"
+                    elif customer_salutation and customer_salutation.lower() == 'frau':
+                        greeting = f"Sehr geehrte Frau {customer_name}"
+                    elif customer_salutation and customer_salutation.lower() == 'familie':
+                        greeting = f"Sehr geehrte Familie {customer_name}"
+                    else:
+                        greeting = "Sehr geehrte Damen und Herren"
+
+                    # Build invoice details
+                    invoice_details_text = ""
+                    if len(invoice_list) > 0:
+                        invoice_details_text = "\n\nFolgende Rechnungen sind im Anhang:\n"
+                        for inv in invoice_list:
+                            invoice_date_str = inv.invoice_date if inv.invoice_date else "Unbekannt"
+                            if invoice_date_str and len(invoice_date_str) >= 10:
+                                try:
+                                    date_obj = datetime.fromisoformat(invoice_date_str)
+                                    invoice_date_str = date_obj.strftime("%d.%m.%Y")
+                                except:
+                                    pass
+                            amount_str = f"{inv.amount_cents / 100:.2f} €"
+                            inv_number = inv.invoice_number if inv.invoice_number else "ohne Nummer"
+                            invoice_details_text += f"  - Rechnung Nr. {inv_number} vom {invoice_date_str}: {amount_str}\n"
+
+                    # Build other open invoices text
+                    other_open_text = ""
+                    if other_open_invoices:
+                        other_open_text = "\nBitte beachten Sie, dass folgende Rechnungen noch offen sind:\n"
+                        total_other_open = 0
+                        for inv in other_open_invoices:
+                            inv_date_str = inv["invoice_date"] if inv["invoice_date"] else "Unbekannt"
+                            if inv_date_str and len(inv_date_str) >= 10:
+                                try:
+                                    date_obj = datetime.fromisoformat(inv_date_str)
+                                    inv_date_str = date_obj.strftime("%d.%m.%Y")
+                                except:
+                                    pass
+                            total_other_open += inv["amount_eur"]
+                            other_open_text += f"  - Rechnung Nr. {inv['invoice_number'] or 'ohne Nummer'} vom {inv_date_str}: {inv['amount_eur']:.2f} EUR\n"
+                        other_open_text += f"\nGesamtbetrag offene Rechnungen: {total_other_open:.2f} EUR\n"
+
+                    invoice_text = "anbei senden wir Ihnen Ihre aktuelle Rechnung." if len(invoice_list) == 1 else "anbei senden wir Ihnen Ihre aktuellen Rechnungen."
+
+                    email_body = f"""{greeting},
+
+{invoice_text}{invoice_details_text}{other_open_text}
+Wir bedanken uns herzlich für Ihr Vertrauen und Ihre Treue. ✨
+Sollten Sie Fragen zu Ihrer Rechnung haben, stehen wir Ihnen selbstverständlich gerne zur Verfügung.
+
+💬 Nutzen Sie bei Fragen zu Ihren Rechnungen WhatsApp unter: 06731-548846
+
+💡 Hinweis: Falls Sie einen bequemen Bankeinzug wünschen, sprechen Sie uns gerne an.
+Wir richten Ihnen gerne ein SEPA-Lastschriftmandat ein.
+
+Mit freundlichen Grüßen
+Ihr Team der Apotheke am Damm
+
+---
+Apotheke am Damm
+Matthias Blüm, e.K.
+Am Damm 17, 55232 Alzey
+Tel. : 06731 / 548846
+Fax: 06731 / 548847
+www.apothekeamdamm.de
+
+Der Inhalt dieser Nachricht ist vertraulich. Sollte diese Nachricht nicht für Sie bestimmt sein, löschen Sie diese bitte umgehend. This message was sent confidential. If you are not the recipient, please delete immediately.
+"""
+
+                    previews.append({
+                        "customer_name": customer_name,
+                        "customer_email": customer_email,
+                        "salutation": customer_salutation,
+                        "subject": "💊 Ihre aktuelle Monatsrechnung",
+                        "invoices_to_send": [
+                            {
+                                "invoice_number": inv.invoice_number,
+                                "invoice_date": inv.invoice_date,
+                                "amount_eur": round(inv.amount_cents / 100.0, 2)
+                            } for inv in invoice_list
+                        ],
+                        "other_open_invoices": other_open_invoices,
+                        "email_body": email_body
+                    })
+
+            return jsonify({
+                "success": True,
+                "total_customers": len(previews),
+                "total_invoices": len(invoices),
+                "previews": previews
+            })
+
+        except Exception as e:
+            logging.exception("Error generating email preview")
+            return jsonify({"success": False, "error": str(e)}), 500
+
     @app.route("/api/send-invoices-email-stream", methods=["GET"])
     def send_invoices_email_stream() -> Response:
         """Send invoices via email with real-time progress updates using Server-Sent Events."""
@@ -3710,10 +1983,22 @@ def create_app(config: Optional[dict] = None) -> Flask:
                 smtp_config = load_smtp_config()
                 smtp_connection: Optional[smtplib.SMTP] = None
 
+                # Many SMTP servers limit the number of messages per session.
+                # Proactively reconnect after this many sends to avoid the
+                # "452 Maximum number of messages per session exceeded" error.
+                try:
+                    max_per_session = int(os.getenv("SMTP_MAX_PER_SESSION", "20"))
+                except ValueError:
+                    max_per_session = 20
+                if max_per_session < 1:
+                    max_per_session = 1
+                sent_in_session = 0
+
                 def ensure_smtp_connection() -> smtplib.SMTP:
-                    nonlocal smtp_connection
+                    nonlocal smtp_connection, sent_in_session
                     if smtp_connection is None:
                         smtp_connection = create_smtp_connection(smtp_config)
+                        sent_in_session = 0
                     return smtp_connection
 
                 def reset_smtp_connection() -> None:
@@ -3828,6 +2113,12 @@ def create_app(config: Optional[dict] = None) -> Flask:
                             # Send info message
                             yield f"data: {json.dumps({'type': 'info', 'customer': customer_name, 'email': customer_email, 'count': len(pdf_paths)})}\n\n"
 
+                            # Proactively refresh the SMTP connection before hitting the
+                            # server's per-session message limit (avoids 452 errors).
+                            if sent_in_session >= max_per_session:
+                                reset_smtp_connection()
+                                yield f"data: {json.dumps({'type': 'status', 'message': f'Verbindung wird erneuert (nach {sent_in_session} E-Mails)...'})}\n\n"
+
                             # Status: Sending email
                             yield f"data: {json.dumps({'type': 'status', 'message': f'Sende E-Mail an {customer_email}... ({processed_groups + 1}/{total_groups})'})}\n\n"
 
@@ -3876,6 +2167,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
                             if send_success:
                                 success_count += len(pdf_paths)
+                                sent_in_session += 1
                                 # Log email sent event for each invoice
                                 for invoice in invoice_list:
                                     log_invoice_event(
@@ -5611,601 +3903,6 @@ def create_app(config: Optional[dict] = None) -> Flask:
         return send_from_directory(root, relative_path, mimetype="application/pdf")
 
     return app
-
-
-def clamp_limit(raw_limit: Optional[str], max_limit: int) -> int:
-    if not raw_limit:
-        return max_limit
-    try:
-        value = int(raw_limit)
-    except ValueError:
-        return max_limit
-    return max(1, min(value, max_limit))
-
-
-def fetch_invoices(
-    database_path: str,
-    query: str,
-    limit: int,
-    time_filter: str = "current_month",
-    status_filter: str = "all",
-    from_month: str = "",
-    to_month: str = "",
-    email_filter: str = "all",
-    uncollectible_filter: str = "hide",
-    collective_filter: str = "all",
-    sort_by: str = "date",
-    sort_direction: str = "desc",
-    invoice_date_from: str = "",
-    invoice_date_to: str = "",
-) -> List[InvoiceRow]:
-    """
-    Fetch invoices with their payment status based on snapshot tracking.
-
-    Time filter (Snapshot):
-    - 'all': All snapshots
-    - 'current_month': Only invoices present in the latest snapshot
-    - 'custom': Snapshots within the provided month range (YYYY-MM)
-
-    Status filter:
-    - 'all': All statuses
-    - 'open': Invoice appears in the latest snapshot
-    - 'paid': Invoice doesn't appear in latest snapshot but appeared in earlier ones
-
-    Uncollectible filter:
-    - 'hide': Hide uncollectible invoices (default)
-    - 'show': Show uncollectible invoices
-    - 'only': Show only uncollectible invoices
-
-    Collective invoice filter (Sammelrechnung):
-    - 'all': Show all invoices
-    - 'in': Show only invoices in a collective invoice
-    - 'not_in': Show only invoices not in a collective invoice
-
-    Invoice date range filter (Rechnungsdatum):
-    - invoice_date_from: Start date in YYYY-MM-DD format
-    - invoice_date_to: End date in YYYY-MM-DD format
-
-    Custom date range:
-    - from_month: Start month in YYYY-MM format
-    - to_month: End month in YYYY-MM format
-    """
-    with sqlite3.connect(database_path) as conn:
-        conn.row_factory = sqlite3.Row
-        # Register helper used in ORDER BY to sort by surname
-        conn.create_function("LAST_WORD", 1, sql_last_word)
-
-        # Get the latest snapshot date
-        latest_snapshot_row = conn.execute(
-            "SELECT MAX(snapshot_date) as latest FROM snapshots"
-        ).fetchone()
-
-        if not latest_snapshot_row or not latest_snapshot_row["latest"]:
-            # No snapshots yet
-            return []
-
-        latest_snapshot = latest_snapshot_row["latest"]
-
-        # Snapshot filter configuration
-        snapshot_filter_sql = ""
-        snapshot_filter_params: List[str] = []
-        snapshot_filter_active = False
-
-        if time_filter == "current_month":
-            snapshot_filter_sql += " AND s.snapshot_date = ?"
-            snapshot_filter_params.append(latest_snapshot)
-            snapshot_filter_active = True
-        elif time_filter == "custom" and (from_month or to_month):
-            snapshot_filter_active = True
-            if from_month:
-                snapshot_filter_sql += " AND s.snapshot_date >= ?"
-                snapshot_filter_params.append(from_month)
-            if to_month:
-                snapshot_filter_sql += " AND s.snapshot_date <= ?"
-                snapshot_filter_params.append(to_month)
-
-        # Build the main query
-        sql = """
-            WITH invoice_status AS (
-                SELECT
-                    i.id,
-                    i.invoice_number,
-                    i.invoice_date,
-                    i.customer_name,
-                    i.customer_address,
-                    i.customer_street,
-                    i.customer_city,
-                    i.amount_cents,
-                    i.uncollectible,
-                    i.address_incomplete,
-                    i.name_needs_review as name_needs_review_raw,
-                    MAX(s.snapshot_date) as last_seen_snapshot,
-                    MIN(s.snapshot_date) as first_seen_snapshot,
-                    CASE
-                        WHEN MAX(s.snapshot_date) = ? THEN 'open'
-                        ELSE 'paid'
-                    END as status
-                FROM invoices i
-                JOIN invoice_snapshots isnap ON i.id = isnap.invoice_id
-                JOIN snapshots s ON isnap.snapshot_id = s.id
-                GROUP BY i.id
-            ),
-            snapshot_files AS (
-                SELECT
-                    isnap.invoice_id,
-                    s.snapshot_date,
-                    isnap.file_path,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY isnap.invoice_id
-                        ORDER BY s.snapshot_date DESC
-                    ) as rn
-                FROM invoice_snapshots isnap
-                JOIN snapshots s ON isnap.snapshot_id = s.id
-                WHERE 1=1
-                {snapshot_filter_sql}
-            )
-            SELECT
-                ist.*,
-                sf.file_path,
-                CASE
-                    WHEN EXISTS (
-                        SELECT 1 FROM collective_invoice_items cii
-                        WHERE cii.invoice_id = ist.id
-                    ) THEN 1
-                ELSE 0
-                END as in_collective_invoice,
-                cd.custom_name,
-                cd.custom_street,
-                cd.custom_city,
-                -- If custom_name is set, user already corrected the name, so ignore name_needs_review
-                CASE WHEN cd.custom_name IS NOT NULL AND cd.custom_name != '' THEN 0 ELSE ist.name_needs_review_raw END as name_needs_review
-            FROM invoice_status ist
-            LEFT JOIN snapshot_files sf ON ist.id = sf.invoice_id AND sf.rn = 1
-            LEFT JOIN customer_details cd ON ist.customer_name = cd.customer_name
-            WHERE 1=1
-        """
-
-        # The format string is safe because snapshot_filter_sql is built from static fragments
-        sql = sql.format(snapshot_filter_sql=snapshot_filter_sql)
-
-        params: List[Any] = [latest_snapshot]
-        params.extend(snapshot_filter_params)
-
-        # Apply uncollectible filter
-        if uncollectible_filter == "hide":
-            sql += " AND (ist.uncollectible IS NULL OR ist.uncollectible = 0)"
-        elif uncollectible_filter == "only":
-            sql += " AND ist.uncollectible = 1"
-        # If uncollectible_filter == "show", don't add any filter (show all)
-
-        # Apply hide_before_date filter (hide invoices older than customer's hide_before_date)
-        sql += " AND (cd.hide_before_date IS NULL OR ist.invoice_date >= cd.hide_before_date)"
-
-        # Apply collective invoice filter
-        if collective_filter == "in":
-            sql += " AND EXISTS (SELECT 1 FROM collective_invoice_items cii WHERE cii.invoice_id = ist.id)"
-        elif collective_filter == "not_in":
-            sql += " AND NOT EXISTS (SELECT 1 FROM collective_invoice_items cii WHERE cii.invoice_id = ist.id)"
-        # If collective_filter == "all", don't add any filter (show all)
-
-        # Apply search filter
-        if query:
-            sql += """
-                AND (ist.customer_name LIKE ?
-                     OR ist.invoice_number LIKE ?
-                     OR ist.customer_address LIKE ?
-                     OR ist.customer_street LIKE ?
-                     OR ist.customer_city LIKE ?)
-            """
-            pattern = f"%{query}%"
-            params.extend([pattern, pattern, pattern, pattern, pattern])
-
-        # Require the invoice to be present in the requested snapshot range
-        if snapshot_filter_active:
-            sql += " AND sf.invoice_id IS NOT NULL"
-
-        # Apply status filter
-        if status_filter == "open":
-            sql += " AND ist.status = 'open'"
-        elif status_filter == "paid":
-            sql += " AND ist.status = 'paid'"
-
-        # Apply email filter
-        if email_filter == "with_email":
-            sql += " AND cd.email IS NOT NULL AND cd.email != ''"
-        elif email_filter == "without_email":
-            sql += " AND (cd.email IS NULL OR cd.email = '')"
-
-        # Apply invoice date range filter (Rechnungsdatum)
-        if invoice_date_from:
-            sql += " AND ist.invoice_date >= ?"
-            params.append(invoice_date_from)
-        if invoice_date_to:
-            sql += " AND ist.invoice_date <= ?"
-            params.append(invoice_date_to)
-
-        sort_key, sort_dir = normalize_sort_params(sort_by, sort_direction)
-        order_expression = SORT_COLUMN_MAP[sort_key]
-
-        sql += f" ORDER BY {order_expression} {sort_dir.upper()}, ist.id DESC LIMIT ?"
-        params.append(limit)
-
-        rows = conn.execute(sql, params).fetchall()
-
-    return [row_from_sql(row) for row in rows]
-
-
-def row_from_sql(row: sqlite3.Row) -> InvoiceRow:
-    # Get custom values from customer_details if available
-    custom_name = row["custom_name"] if "custom_name" in row.keys() and row["custom_name"] else None
-    custom_street = row["custom_street"] if "custom_street" in row.keys() and row["custom_street"] else None
-    custom_city = row["custom_city"] if "custom_city" in row.keys() and row["custom_city"] else None
-
-    # Get street and city if available
-    customer_street = custom_street or (row["customer_street"] if "customer_street" in row.keys() else None)
-    customer_city = custom_city or (row["customer_city"] if "customer_city" in row.keys() else None)
-
-    # Use custom_name if available, otherwise use original customer_name
-    customer_name = custom_name or row["customer_name"]
-
-    # If street and city are available, construct address from them
-    # Otherwise use the old customer_address field
-    if customer_street and customer_city:
-        customer_address = f"{customer_street}, {customer_city}"
-    else:
-        customer_address = row["customer_address"]
-
-    return InvoiceRow(
-        id=row["id"],
-        invoice_number=row["invoice_number"],
-        invoice_date=row["invoice_date"],
-        customer_name=customer_name,
-        customer_address=customer_address,
-        amount_cents=row["amount_cents"],
-        status=row["status"],
-        last_seen_snapshot=row["last_seen_snapshot"],
-        first_seen_snapshot=row["first_seen_snapshot"],
-        file_path=row["file_path"] if "file_path" in row.keys() else None,
-        in_collective_invoice=bool(row["in_collective_invoice"]) if "in_collective_invoice" in row.keys() else False,
-        customer_street=customer_street,
-        customer_city=customer_city,
-        address_incomplete=bool(row["address_incomplete"]) if "address_incomplete" in row.keys() else False,
-        name_needs_review=bool(row["name_needs_review"]) if "name_needs_review" in row.keys() else False,
-    )
-
-
-def group_by_customer(invoices: List[InvoiceRow]) -> List[Dict]:
-    """Group invoices by customer name, returning a list of customer groups."""
-    groups = defaultdict(list)
-    for invoice in invoices:
-        groups[invoice.customer_name].append(invoice)
-
-    # Convert to list of dicts with summary info
-    result = []
-    for customer_name, customer_invoices in sorted(groups.items()):
-        total = sum(inv.amount_eur for inv in customer_invoices)
-        result.append({
-            "customer_name": customer_name,
-            "customer_address": customer_invoices[0].customer_address,
-            "invoice_count": len(customer_invoices),
-            "total_amount": total,
-            "invoices": sorted(customer_invoices, key=lambda x: x.invoice_date, reverse=True),
-        })
-
-    # Sort by total amount descending
-    result.sort(key=lambda x: x["total_amount"], reverse=True)
-    return result
-
-
-def calculate_months_open(invoice_date_str: str) -> int:
-    """Calculate how many months an invoice has been open."""
-    try:
-        invoice_date = datetime.strptime(invoice_date_str, "%Y-%m-%d").date()
-        today = date.today()
-
-        # Calculate month difference
-        months_diff = (today.year - invoice_date.year) * 12 + (today.month - invoice_date.month)
-        return max(0, months_diff)
-    except (ValueError, AttributeError):
-        return 0
-
-
-def get_recommended_reminder_level(months_open: int, last_reminder_level: Optional[int]) -> Optional[int]:
-    """
-    Determine the recommended reminder level based on how long the invoice has been open.
-
-    Rules:
-    - ALWAYS start with Zahlungserinnerung (level 0) when > 2 months (>= 3 months)
-    - Then 1. Mahnung (level 1) after level 0 was sent and >= 3 months
-    - Then 2. Mahnung (level 2, Einschreiben) after level 1 was sent and >= 4 months
-
-    Important: Levels must be sent in sequence! Never skip a level.
-    """
-    if months_open < 3:
-        return None
-
-    if last_reminder_level is None:
-        # No reminders sent yet - ALWAYS start with level 0
-        if months_open >= 3:
-            return 0
-        return None
-    elif last_reminder_level == 0:
-        # Zahlungserinnerung was sent, recommend 1. Mahnung if >= 3 months
-        if months_open >= 3:
-            return 1
-        return None
-    elif last_reminder_level == 1:
-        # 1. Mahnung was sent, recommend 2. Mahnung if >= 4 months
-        if months_open >= 4:
-            return 2
-        return None
-    else:
-        # Already at max level (2)
-        return None
-
-
-def fetch_all_customers(database_path: str) -> List[Dict]:
-    """
-    Fetch all unique customers from invoices with their details.
-    Returns a list of customer dictionaries with name, address, email, notes.
-    Custom name/street/city from customer_details will override invoice data if present.
-    """
-    with sqlite3.connect(database_path) as conn:
-        conn.row_factory = sqlite3.Row
-        init_db(conn)
-
-        # Get all unique customers from invoices with their details
-        sql = """
-            SELECT
-                i.customer_name,
-                i.customer_address,
-                i.customer_street,
-                i.customer_city,
-                MAX(i.address_incomplete) as address_incomplete,
-                -- If custom_name is set, user already corrected the name, so ignore name_needs_review
-                CASE WHEN cd.custom_name IS NOT NULL AND cd.custom_name != '' THEN 0 ELSE MAX(i.name_needs_review) END as name_needs_review,
-                cd.salutation,
-                cd.email,
-                cd.notes,
-                cd.never_remind,
-                cd.bank_debit,
-                cd.print_only,
-                cd.always_rx,
-                cd.hide_before_date,
-                cd.custom_name,
-                cd.custom_street,
-                cd.custom_city,
-                COUNT(DISTINCT i.id) as invoice_count,
-                SUM(i.amount_cents) as total_amount_cents
-            FROM invoices i
-            LEFT JOIN customer_details cd ON i.customer_name = cd.customer_name
-            GROUP BY i.customer_name, i.customer_address, i.customer_street, i.customer_city, cd.salutation, cd.email, cd.notes, cd.never_remind, cd.bank_debit, cd.print_only, cd.always_rx, cd.hide_before_date, cd.custom_name, cd.custom_street, cd.custom_city
-            ORDER BY i.customer_name
-        """
-
-        rows = conn.execute(sql).fetchall()
-
-    customers = []
-    for row in rows:
-        # Use custom values if available, otherwise fall back to invoice data
-        display_name = row["custom_name"] if row["custom_name"] else row["customer_name"]
-        display_street = row["custom_street"] if row["custom_street"] else (row["customer_street"] or "")
-        display_city = row["custom_city"] if row["custom_city"] else (row["customer_city"] or "")
-
-        customers.append({
-            "customer_name": row["customer_name"],  # Keep original for identification
-            "display_name": display_name,  # Display name (custom or original)
-            "customer_address": row["customer_address"],
-            "customer_street": display_street,
-            "customer_city": display_city,
-            "custom_name": row["custom_name"] or "",  # For editing
-            "custom_street": row["custom_street"] or "",  # For editing
-            "custom_city": row["custom_city"] or "",  # For editing
-            "salutation": row["salutation"] or "",
-            "email": row["email"] or "",
-            "notes": row["notes"] or "",
-            "never_remind": row["never_remind"] or 0,
-            "bank_debit": row["bank_debit"] or 0,
-            "print_only": row["print_only"] or 0,
-            "always_rx": row["always_rx"] or 0,
-            "hide_before_date": row["hide_before_date"] or "",
-            "address_incomplete": row["address_incomplete"] or 0,
-            "name_needs_review": row["name_needs_review"] or 0,
-            "invoice_count": row["invoice_count"],
-            "total_amount_eur": row["total_amount_cents"] / 100.0 if row["total_amount_cents"] else 0.0,
-        })
-
-    # Sort by last name (last word of display_name), case-insensitive
-    def get_last_name(customer: Dict) -> str:
-        name = customer.get("display_name", "")
-        parts = name.strip().split()
-        return parts[-1].lower() if parts else ""
-
-    customers.sort(key=get_last_name)
-
-    return customers
-
-
-def fetch_invoices_with_reminders(database_path: str, filter_reminded: Optional[bool] = None, hide_never_remind: bool = True) -> List[InvoiceWithReminder]:
-    """
-    Fetch open invoices with their reminder information.
-
-    Args:
-        database_path: Path to the database
-        filter_reminded: If True, only show invoices with reminders. If False, only show invoices without reminders.
-                        If None, show all open invoices.
-        hide_never_remind: If True (default), hide customers with never_remind flag set. If False, show all.
-    """
-    with sqlite3.connect(database_path) as conn:
-        conn.row_factory = sqlite3.Row
-
-        # Get the latest snapshot date
-        latest_snapshot_row = conn.execute(
-            "SELECT MAX(snapshot_date) as latest FROM snapshots"
-        ).fetchone()
-
-        if not latest_snapshot_row or not latest_snapshot_row["latest"]:
-            return []
-
-        latest_snapshot = latest_snapshot_row["latest"]
-
-        # Query to get open invoices with reminder info
-        sql = """
-            WITH invoice_status AS (
-                SELECT
-                    i.id,
-                    i.invoice_number,
-                    i.invoice_date,
-                    i.customer_name,
-                    i.customer_address,
-                    i.customer_street,
-                    i.customer_city,
-                    i.amount_cents,
-                    i.uncollectible,
-                    MAX(s.snapshot_date) as last_seen_snapshot,
-                    MIN(s.snapshot_date) as first_seen_snapshot,
-                    CASE
-                        WHEN MAX(s.snapshot_date) = ? THEN 'open'
-                        ELSE 'paid'
-                    END as status
-                FROM invoices i
-                JOIN invoice_snapshots isnap ON i.id = isnap.invoice_id
-                JOIN snapshots s ON isnap.snapshot_id = s.id
-                GROUP BY i.id
-                HAVING status = 'open'
-            ),
-            last_reminder AS (
-                SELECT
-                    r.invoice_id,
-                    r.reminder_level as last_reminder_level,
-                    r.sent_date as last_reminder_date,
-                    r.letterexpress_status,
-                    r.pdf_path
-                FROM reminders r
-                INNER JOIN (
-                    SELECT invoice_id, MAX(created_at) as max_created
-                    FROM reminders
-                    WHERE invoice_id IN (SELECT id FROM invoice_status)
-                    GROUP BY invoice_id
-                ) latest ON r.invoice_id = latest.invoice_id AND r.created_at = latest.max_created
-            ),
-            reminder_group_counts AS (
-                SELECT
-                    pdf_path,
-                    COUNT(*) as invoices_in_group
-                FROM last_reminder
-                WHERE pdf_path IS NOT NULL
-                GROUP BY pdf_path
-            ),
-            invoice_files AS (
-                SELECT
-                    ist.id,
-                    CASE
-                        WHEN isnap.file_path IS NOT NULL THEN isnap.file_path
-                        ELSE NULL
-                    END as file_path
-                FROM invoice_status ist
-                LEFT JOIN invoice_snapshots isnap ON ist.id = isnap.invoice_id
-                LEFT JOIN snapshots s ON isnap.snapshot_id = s.id
-                WHERE s.snapshot_date = ist.last_seen_snapshot
-                GROUP BY ist.id
-            )
-            SELECT
-                ist.*,
-                if.file_path,
-                lr.last_reminder_level,
-                lr.last_reminder_date,
-                lr.letterexpress_status,
-                lr.pdf_path as reminder_pdf_path,
-                CASE WHEN lr.invoice_id IS NOT NULL THEN 1 ELSE 0 END as has_reminders,
-                COALESCE(rgc.invoices_in_group, 1) as invoices_in_group,
-                COALESCE(cd.never_remind, 0) as never_remind,
-                cd.custom_name,
-                cd.custom_street,
-                cd.custom_city
-            FROM invoice_status ist
-            LEFT JOIN invoice_files if ON ist.id = if.id
-            LEFT JOIN last_reminder lr ON ist.id = lr.invoice_id
-            LEFT JOIN reminder_group_counts rgc ON lr.pdf_path = rgc.pdf_path
-            LEFT JOIN customer_details cd ON ist.customer_name = cd.customer_name
-            WHERE 1=1
-        """
-
-        params = [latest_snapshot]
-
-        # Apply never_remind filter (hide customers with never_remind=1 by default)
-        if hide_never_remind:
-            sql += " AND COALESCE(cd.never_remind, 0) = 0"
-
-        # Apply hide_before_date filter (hide invoices older than customer's hide_before_date)
-        sql += " AND (cd.hide_before_date IS NULL OR ist.invoice_date >= cd.hide_before_date)"
-
-        # Apply reminder filter
-        if filter_reminded is True:
-            sql += " AND lr.invoice_id IS NOT NULL"
-        elif filter_reminded is False:
-            sql += " AND lr.invoice_id IS NULL"
-
-        sql += " ORDER BY ist.invoice_date ASC"
-
-        rows = conn.execute(sql, params).fetchall()
-
-    result = []
-    for row in rows:
-        months_open = calculate_months_open(row["invoice_date"])
-        recommended_level = get_recommended_reminder_level(
-            months_open,
-            row["last_reminder_level"]
-        )
-
-        # Get custom values from customer_details if available
-        custom_name = row["custom_name"] if "custom_name" in row.keys() and row["custom_name"] else None
-        custom_street = row["custom_street"] if "custom_street" in row.keys() and row["custom_street"] else None
-        custom_city = row["custom_city"] if "custom_city" in row.keys() and row["custom_city"] else None
-
-        # Get original street and city
-        original_street = row["customer_street"] if "customer_street" in row.keys() else None
-        original_city = row["customer_city"] if "customer_city" in row.keys() else None
-
-        # Use custom values if available, otherwise use originals
-        customer_street = custom_street or original_street
-        customer_city = custom_city or original_city
-
-        # Use custom_name if available, otherwise use original customer_name
-        customer_name = custom_name or row["customer_name"]
-
-        # Construct address from street and city (prefer custom over original)
-        if customer_street and customer_city:
-            customer_address = f"{customer_street}, {customer_city}"
-        else:
-            customer_address = row["customer_address"]
-
-        invoice = InvoiceWithReminder(
-            id=row["id"],
-            invoice_number=row["invoice_number"],
-            invoice_date=row["invoice_date"],
-            customer_name=customer_name,
-            customer_address=customer_address,
-            amount_cents=row["amount_cents"],
-            status=row["status"],
-            last_seen_snapshot=row["last_seen_snapshot"],
-            first_seen_snapshot=row["first_seen_snapshot"],
-            file_path=row["file_path"] if "file_path" in row.keys() else None,
-            uncollectible=row["uncollectible"] if "uncollectible" in row.keys() and row["uncollectible"] is not None else 0,
-            months_open=months_open,
-            recommended_level=recommended_level,
-            last_reminder_level=row["last_reminder_level"],
-            last_reminder_date=row["last_reminder_date"],
-            letterexpress_status=row["letterexpress_status"],
-            has_reminders=bool(row["has_reminders"]),
-            reminder_pdf_path=row["reminder_pdf_path"] if "reminder_pdf_path" in row.keys() else None,
-            invoices_in_group=row["invoices_in_group"] if "invoices_in_group" in row.keys() else 1,
-            customer_street=customer_street,
-            customer_city=customer_city,
-        )
-        result.append(invoice)
-
-    return result
 
 
 def parse_args() -> argparse.Namespace:

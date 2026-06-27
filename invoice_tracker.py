@@ -126,8 +126,12 @@ def configure_logging(verbose: bool) -> None:
     console_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
     root_logger.addHandler(console_handler)
 
-    # File handler for errors
-    file_handler = logging.FileHandler("import_errors.log", encoding="utf-8")
+    # Rotating file handler for errors (2 MB x 3 backups) so the log
+    # cannot grow unbounded.
+    from logging.handlers import RotatingFileHandler
+    file_handler = RotatingFileHandler(
+        "import_errors.log", maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
     file_handler.setLevel(logging.ERROR)
     file_handler.setFormatter(
         logging.Formatter("%(asctime)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
@@ -955,7 +959,8 @@ Antwort:"""
         else:
             return None
 
-    except Exception:
+    except Exception as e:
+        logging.warning(f"Gender AI determination failed for '{first_name}': {e}")
         return None
 
 

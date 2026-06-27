@@ -2206,12 +2206,16 @@
         } else if (data.type === 'complete') {
           progressBar.style.width = '100%';
           progressText.textContent = data.message;
-          statusText.textContent = `✓ ${data.success} von ${data.total} Anreden ermittelt`;
+          if (data.ai_failed) {
+            statusText.textContent = '✗ KI nicht erreichbar – bitte NEBIUS_API_KEY prüfen';
+          } else {
+            statusText.textContent = `✓ ${data.success} von ${data.total} Anreden ermittelt`;
+          }
           eventSource.close();
           setTimeout(() => {
             modal.style.display = 'none';
             resolve(data);
-          }, 1500);
+          }, data.ai_failed ? 3500 : 1500);
         } else if (data.type === 'error') {
           progressText.textContent = 'Fehler!';
           statusText.textContent = data.message;
