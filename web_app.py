@@ -19,12 +19,13 @@ from typing import Iterable, List, Optional, Dict, Tuple, Any
 from collections import defaultdict
 import os
 import smtplib
+import imaplib
 import time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
-from email.utils import encode_rfc2231
+from email.utils import encode_rfc2231, formatdate
 from dotenv import load_dotenv
 import requests
 import re as regex_module
@@ -192,6 +193,105 @@ def create_smtp_connection(config: SMTPConfig) -> smtplib.SMTP:
     return server
 
 
+@dataclass
+class IMAPConfig:
+    server: str
+    port: int
+    user: str
+    password: str
+
+
+def load_imap_config() -> IMAPConfig:
+    """Read IMAP settings from the environment."""
+    return IMAPConfig(
+        server=os.getenv('IMAP_SERVER', 'mail.kaeee.de'),
+        port=int(os.getenv('IMAP_PORT', '993')),
+        user=os.getenv('IMAP_USER', 'info@apothekeamdamm.de'),
+        password=os.getenv('IMAP_PASSWORD', ''),
+    )
+
+
+def save_email_to_sent_folder(msg: MIMEMultipart, imap_config: Optional[IMAPConfig] = None) -> bool:
+    """
+    Save a sent email to the IMAP 'Sent' folder.
+
+    Args:
+        msg: The email message to save
+        imap_config: IMAP configuration (optional, will load from env if not provided)
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        config = imap_config or load_imap_config()
+
+        # Connect to IMAP server
+        imap = imaplib.IMAP4_SSL(config.server, config.port)
+        imap.login(config.user, config.password)
+
+        # Add Date header if not present
+        if 'Date' not in msg:
+            msg['Date'] = formatdate(localtime=True)
+
+        # Convert message to bytes
+        email_bytes = msg.as_bytes()
+
+        # Try common "Sent" folder names
+        sent_folder_names = ['Sent', 'INBOX.Sent', 'Gesendet', 'INBOX.Gesendet', 'Sent Items']
+
+        # List all folders to find the correct Sent folder
+        status, folders = imap.list()
+        if status == 'OK':
+            folder_list = [f.decode().split('"')[-2] for f in folders if f]
+            logging.debug(f"Available IMAP folders: {folder_list}")
+
+        sent_folder = None
+
+        # First, try to find any folder containing 'sent' or 'gesendet' in the folder list
+        for folder in folder_list:
+            if 'sent' in folder.lower() or 'gesendet' in folder.lower():
+                try:
+                    # Quote folder name if it contains spaces
+                    folder_to_select = f'"{folder}"' if ' ' in folder else folder
+                    status, _ = imap.select(folder_to_select)
+                    if status == 'OK':
+                        sent_folder = folder
+                        logging.info(f"Found Sent folder: {sent_folder}")
+                        break
+                except:
+                    continue
+
+        # Fallback: try exact names
+        if not sent_folder:
+            for name in sent_folder_names:
+                try:
+                    folder_to_select = f'"{name}"' if ' ' in name else name
+                    status, _ = imap.select(folder_to_select)
+                    if status == 'OK':
+                        sent_folder = name
+                        break
+                except:
+                    continue
+
+        if not sent_folder:
+            logging.error("Could not find 'Sent' folder on IMAP server")
+            imap.logout()
+            return False
+
+        # Append the message to the Sent folder
+        # Quote folder name if it contains spaces
+        folder_to_append = f'"{sent_folder}"' if ' ' in sent_folder else sent_folder
+        imap.append(folder_to_append, '\\Seen', imaplib.Time2Internaldate(time.time()), email_bytes)
+        imap.logout()
+
+        logging.info(f"Email saved to IMAP folder: {sent_folder}")
+        return True
+
+    except Exception as e:
+        logging.error(f"Failed to save email to IMAP Sent folder: {e}")
+        return False
+
+
 def _ascii_safe_filename(filename: str) -> str:
     """Return a best-effort ASCII representation of a filename."""
     translated = filename.translate(ASCII_FALLBACK_MAP)
@@ -291,6 +391,13 @@ Der Inhalt dieser Nachricht ist vertraulich. Sollte diese Nachricht nicht für S
         server = create_smtp_connection(smtp_config)
         try:
             server.send_message(msg)
+
+            # Save email to IMAP Sent folder
+            try:
+                save_email_to_sent_folder(msg)
+            except Exception as imap_error:
+                logging.warning(f"Failed to save email to IMAP Sent folder: {imap_error}")
+                # Don't fail the whole operation if IMAP save fails
         finally:
             try:
                 server.quit()
@@ -448,6 +555,13 @@ Der Inhalt dieser Nachricht ist vertraulich. Sollte diese Nachricht nicht für S
 
         try:
             connection.send_message(msg)
+
+            # Save email to IMAP Sent folder
+            try:
+                save_email_to_sent_folder(msg)
+            except Exception as imap_error:
+                logging.warning(f"Failed to save email to IMAP Sent folder: {imap_error}")
+                # Don't fail the whole operation if IMAP save fails
         finally:
             if owns_connection and connection:
                 try:
@@ -1020,16 +1134,15 @@ def create_cover_letter_pdf(
     content_y -= 25
     c.setFillColor(primary_color)
     c.setFont("Helvetica-Bold", 11)
-    c.drawString(left_margin, content_y, "Hinweis bei Zuzahlungsbefreiung:")
+    c.drawString(left_margin, content_y, "Wichtig nur für gesetzlich Versicherte mit Zuzahlungsbefreiung:")
 
     content_y -= 15
     text_width = right_margin - left_margin
     c.setFillColor(black)
-    text = ("Trotz Befreiung von der Rezeptgebühr ist der Rechnungsbetrag fällig, da das Rezept/die Rezepte vom "
-            "Arzt als \"gebührenpflichtig\" gekennzeichnet wurde(n). Mit dieser Rechnung und einem "
-            "Zahlungsnachweis erhalten Sie den Betrag von Ihrer Krankenkasse erstattet. Bitte reichen Sie uns "
-            "ebenfalls eine Kopie des Befreiungsausweises ein. Für Rückfragen helfen wir Ihnen natürlich gerne "
-            "weiter.")
+    text = ("Trotz Ihrer Befreiung von der Rezeptgebühr ist dieser Rechnungsbetrag fällig, da Ihr Arzt das Rezept "
+            "als \"gebührenpflichtig\" gekennzeichnet hat. Sie erhalten den Betrag von Ihrer Krankenkasse erstattet, "
+            "wenn Sie dort diese Rechnung zusammen mit dem Zahlungsnachweis einreichen. Bitte senden Sie uns "
+            "auch eine Kopie Ihres Befreiungsausweises zu. Bei Fragen helfen wir gerne weiter.")
     content_y = draw_justified_paragraph(c, text, left_margin, content_y, text_width, font_size=9)
 
     # === SCHLUSS ===
@@ -1334,15 +1447,15 @@ def create_reminder_pdf(
     info_y = height - 150
     c.setFillColor(primary_color)
     c.setFont("Helvetica-Bold", 11)
-    c.drawString(left_margin, info_y, "Hinweis bei Zuzahlungsbefreiung:")
+    c.drawString(left_margin, info_y, "Wichtig nur für gesetzlich Versicherte mit Zuzahlungsbefreiung:")
 
     info_y -= 15
     text_width = right_margin - left_margin
     c.setFillColor(black)
-    text = ("Trotz Befreiung von der Rezeptgebühr ist der Rechnungsbetrag fällig, da das Rezept/die Rezepte vom Arzt als "
-            "\"gebührenpflichtig\" gekennzeichnet wurde(n). Mit dieser Rechnung und einem Zahlungsnachweis erhalten Sie den "
-            "Betrag von Ihrer Krankenkasse erstattet. Bitte reichen Sie uns ebenfalls eine Kopie des Befreiungsausweises ein. "
-            "Für Rückfragen helfen wir Ihnen natürlich gerne weiter.")
+    text = ("Trotz Ihrer Befreiung von der Rezeptgebühr ist dieser Rechnungsbetrag fällig, da Ihr Arzt das Rezept "
+            "als \"gebührenpflichtig\" gekennzeichnet hat. Sie erhalten den Betrag von Ihrer Krankenkasse erstattet, "
+            "wenn Sie dort diese Rechnung zusammen mit dem Zahlungsnachweis einreichen. Bitte senden Sie uns "
+            "auch eine Kopie Ihres Befreiungsausweises zu. Bei Fragen helfen wir gerne weiter.")
     info_y = draw_justified_paragraph(c, text, left_margin, info_y, text_width, font_size=9)
 
     # Title
@@ -3667,6 +3780,182 @@ def create_app(config: Optional[dict] = None) -> Flask:
         except Exception as e:
             logging.error(f"Fehler beim Kombinieren der PDFs: {e}")
             return jsonify({"error": f"Fehler beim Erstellen des PDFs: {str(e)}"}), 500
+
+    @app.route("/api/preview-invoices-email", methods=["GET"])
+    def preview_invoices_email() -> Response:
+        """Preview what emails would be sent (DRY RUN - no actual sending)."""
+        import json
+        from datetime import datetime
+
+        query = request.args.get("q", "").strip()
+        limit = clamp_limit(request.args.get("limit"), app.config["MAX_LIMIT"])
+        time_filter = request.args.get("time", "all")
+        status_filter = request.args.get("status", "open")
+        email_filter = request.args.get("email", "all")
+        uncollectible_filter = request.args.get("uncollectible", "hide")
+        collective_filter = request.args.get("collective", "all")
+        invoice_date_from = request.args.get("invoice_date_from", "")
+        invoice_date_to = request.args.get("invoice_date_to", "")
+        from_month = request.args.get("from_month", "")
+        to_month = request.args.get("to_month", "")
+
+        try:
+            invoices = fetch_invoices(app.config["DATABASE"], query, limit, time_filter, status_filter, from_month, to_month, email_filter, uncollectible_filter, collective_filter, invoice_date_from=invoice_date_from, invoice_date_to=invoice_date_to)
+
+            if not invoices:
+                return jsonify({"success": False, "error": "Keine Rechnungen gefunden"}), 404
+
+            # Group invoices by customer
+            grouped_invoices = defaultdict(list)
+            for invoice in invoices:
+                grouped_invoices[invoice.customer_name].append(invoice)
+
+            previews = []
+
+            with sqlite3.connect(app.config["DATABASE"]) as conn:
+                conn.row_factory = sqlite3.Row
+                init_db(conn)
+
+                for customer_name, invoice_list in grouped_invoices.items():
+                    # Get customer email and salutation
+                    customer_row = conn.execute(
+                        "SELECT email, salutation FROM customer_details WHERE customer_name = ?",
+                        (customer_name,)
+                    ).fetchone()
+
+                    if not customer_row or not customer_row["email"]:
+                        previews.append({
+                            "customer_name": customer_name,
+                            "error": "Keine E-Mail-Adresse hinterlegt",
+                            "invoices_to_send": len(invoice_list)
+                        })
+                        continue
+
+                    customer_email = customer_row["email"]
+                    customer_salutation = customer_row["salutation"] if "salutation" in customer_row.keys() else None
+
+                    # Get other open invoices for this customer (not in current filter)
+                    current_invoice_ids = {inv.id for inv in invoice_list}
+                    other_open_cursor = conn.execute(
+                        """
+                        SELECT i.id, i.invoice_number, i.invoice_date, i.amount_cents
+                        FROM invoices i
+                        JOIN invoice_snapshots isnap ON i.id = isnap.invoice_id
+                        JOIN snapshots s ON isnap.snapshot_id = s.id
+                        WHERE i.customer_name = ?
+                          AND s.snapshot_date = (SELECT MAX(snapshot_date) FROM snapshots)
+                          AND i.uncollectible = 0
+                        ORDER BY i.invoice_date ASC
+                        """,
+                        (customer_name,)
+                    )
+
+                    # Collect other open invoices (not being sent in this email)
+                    other_open_invoices = []
+                    for row in other_open_cursor.fetchall():
+                        if row["id"] not in current_invoice_ids:
+                            other_open_invoices.append({
+                                "invoice_number": row["invoice_number"],
+                                "invoice_date": row["invoice_date"],
+                                "amount_eur": round(row["amount_cents"] / 100.0, 2)
+                            })
+
+                    # Generate email body preview
+                    if customer_salutation and customer_salutation.lower() in ['herr', 'herrn']:
+                        greeting = f"Sehr geehrter Herr {customer_name}"
+                    elif customer_salutation and customer_salutation.lower() == 'frau':
+                        greeting = f"Sehr geehrte Frau {customer_name}"
+                    elif customer_salutation and customer_salutation.lower() == 'familie':
+                        greeting = f"Sehr geehrte Familie {customer_name}"
+                    else:
+                        greeting = "Sehr geehrte Damen und Herren"
+
+                    # Build invoice details
+                    invoice_details_text = ""
+                    if len(invoice_list) > 0:
+                        invoice_details_text = "\n\nFolgende Rechnungen sind im Anhang:\n"
+                        for inv in invoice_list:
+                            invoice_date_str = inv.invoice_date if inv.invoice_date else "Unbekannt"
+                            if invoice_date_str and len(invoice_date_str) >= 10:
+                                try:
+                                    date_obj = datetime.fromisoformat(invoice_date_str)
+                                    invoice_date_str = date_obj.strftime("%d.%m.%Y")
+                                except:
+                                    pass
+                            amount_str = f"{inv.amount_cents / 100:.2f} €"
+                            inv_number = inv.invoice_number if inv.invoice_number else "ohne Nummer"
+                            invoice_details_text += f"  - Rechnung Nr. {inv_number} vom {invoice_date_str}: {amount_str}\n"
+
+                    # Build other open invoices text
+                    other_open_text = ""
+                    if other_open_invoices:
+                        other_open_text = "\nBitte beachten Sie, dass folgende Rechnungen noch offen sind:\n"
+                        total_other_open = 0
+                        for inv in other_open_invoices:
+                            inv_date_str = inv["invoice_date"] if inv["invoice_date"] else "Unbekannt"
+                            if inv_date_str and len(inv_date_str) >= 10:
+                                try:
+                                    date_obj = datetime.fromisoformat(inv_date_str)
+                                    inv_date_str = date_obj.strftime("%d.%m.%Y")
+                                except:
+                                    pass
+                            total_other_open += inv["amount_eur"]
+                            other_open_text += f"  - Rechnung Nr. {inv['invoice_number'] or 'ohne Nummer'} vom {inv_date_str}: {inv['amount_eur']:.2f} EUR\n"
+                        other_open_text += f"\nGesamtbetrag offene Rechnungen: {total_other_open:.2f} EUR\n"
+
+                    invoice_text = "anbei senden wir Ihnen Ihre aktuelle Rechnung." if len(invoice_list) == 1 else "anbei senden wir Ihnen Ihre aktuellen Rechnungen."
+
+                    email_body = f"""{greeting},
+
+{invoice_text}{invoice_details_text}{other_open_text}
+Wir bedanken uns herzlich für Ihr Vertrauen und Ihre Treue. ✨
+Sollten Sie Fragen zu Ihrer Rechnung haben, stehen wir Ihnen selbstverständlich gerne zur Verfügung.
+
+💬 Nutzen Sie bei Fragen zu Ihren Rechnungen WhatsApp unter: 06731-548846
+
+💡 Hinweis: Falls Sie einen bequemen Bankeinzug wünschen, sprechen Sie uns gerne an.
+Wir richten Ihnen gerne ein SEPA-Lastschriftmandat ein.
+
+Mit freundlichen Grüßen
+Ihr Team der Apotheke am Damm
+
+---
+Apotheke am Damm
+Matthias Blüm, e.K.
+Am Damm 17, 55232 Alzey
+Tel. : 06731 / 548846
+Fax: 06731 / 548847
+www.apothekeamdamm.de
+
+Der Inhalt dieser Nachricht ist vertraulich. Sollte diese Nachricht nicht für Sie bestimmt sein, löschen Sie diese bitte umgehend. This message was sent confidential. If you are not the recipient, please delete immediately.
+"""
+
+                    previews.append({
+                        "customer_name": customer_name,
+                        "customer_email": customer_email,
+                        "salutation": customer_salutation,
+                        "subject": "💊 Ihre aktuelle Monatsrechnung",
+                        "invoices_to_send": [
+                            {
+                                "invoice_number": inv.invoice_number,
+                                "invoice_date": inv.invoice_date,
+                                "amount_eur": round(inv.amount_cents / 100.0, 2)
+                            } for inv in invoice_list
+                        ],
+                        "other_open_invoices": other_open_invoices,
+                        "email_body": email_body
+                    })
+
+            return jsonify({
+                "success": True,
+                "total_customers": len(previews),
+                "total_invoices": len(invoices),
+                "previews": previews
+            })
+
+        except Exception as e:
+            logging.exception("Error generating email preview")
+            return jsonify({"success": False, "error": str(e)}), 500
 
     @app.route("/api/send-invoices-email-stream", methods=["GET"])
     def send_invoices_email_stream() -> Response:
