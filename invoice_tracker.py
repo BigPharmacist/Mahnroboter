@@ -955,7 +955,8 @@ Antwort:"""
         else:
             return None
 
-    except Exception:
+    except Exception as e:
+        logging.warning(f"Gender AI determination failed for '{first_name}': {e}")
         return None
 
 

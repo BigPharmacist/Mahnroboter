@@ -2876,14 +2876,19 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     batch_size = 20
                     success_count = 0
                     processed = 0
+                    empty_batches = 0  # batches where the AI returned no usable result
+                    total_batches = 0
 
                     for i in range(0, len(first_names), batch_size):
                         batch = first_names[i:i + batch_size]
+                        total_batches += 1
 
                         yield f"data: {json.dumps({'type': 'progress', 'processed': processed, 'total': total, 'batch': batch})}\n\n"
 
                         # Call batch AI
                         results = determine_genders_batch_via_ai(batch)
+                        if not any(results.values()):
+                            empty_batches += 1
 
                         # Update database for each result
                         for first_name, salutation in results.items():
@@ -2907,7 +2912,14 @@ def create_app(config: Optional[dict] = None) -> Flask:
 
                         conn.commit()
 
-                    yield f"data: {json.dumps({'type': 'complete', 'total': total, 'success': success_count, 'message': f'{success_count} Anreden ermittelt'})}\n\n"
+                    # If every batch came back empty the AI is most likely
+                    # unreachable (e.g. invalid/expired NEBIUS_API_KEY) rather
+                    # than all names genuinely being unknown.
+                    if success_count == 0 and total_batches > 0 and empty_batches == total_batches:
+                        logging.error("Salutation AI returned no results for any batch — check NEBIUS_API_KEY / Nebius availability")
+                        yield f"data: {json.dumps({'type': 'complete', 'total': total, 'success': 0, 'ai_failed': True, 'message': 'KI nicht erreichbar – keine Anreden ermittelt. Bitte NEBIUS_API_KEY prüfen.'})}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'type': 'complete', 'total': total, 'success': success_count, 'message': f'{success_count} Anreden ermittelt'})}\n\n"
 
             except Exception as e:
                 logging.error(f"Error in batch salutations stream: {e}")
