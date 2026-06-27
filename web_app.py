@@ -3999,10 +3999,22 @@ Der Inhalt dieser Nachricht ist vertraulich. Sollte diese Nachricht nicht für S
                 smtp_config = load_smtp_config()
                 smtp_connection: Optional[smtplib.SMTP] = None
 
+                # Many SMTP servers limit the number of messages per session.
+                # Proactively reconnect after this many sends to avoid the
+                # "452 Maximum number of messages per session exceeded" error.
+                try:
+                    max_per_session = int(os.getenv("SMTP_MAX_PER_SESSION", "20"))
+                except ValueError:
+                    max_per_session = 20
+                if max_per_session < 1:
+                    max_per_session = 1
+                sent_in_session = 0
+
                 def ensure_smtp_connection() -> smtplib.SMTP:
-                    nonlocal smtp_connection
+                    nonlocal smtp_connection, sent_in_session
                     if smtp_connection is None:
                         smtp_connection = create_smtp_connection(smtp_config)
+                        sent_in_session = 0
                     return smtp_connection
 
                 def reset_smtp_connection() -> None:
@@ -4117,6 +4129,12 @@ Der Inhalt dieser Nachricht ist vertraulich. Sollte diese Nachricht nicht für S
                             # Send info message
                             yield f"data: {json.dumps({'type': 'info', 'customer': customer_name, 'email': customer_email, 'count': len(pdf_paths)})}\n\n"
 
+                            # Proactively refresh the SMTP connection before hitting the
+                            # server's per-session message limit (avoids 452 errors).
+                            if sent_in_session >= max_per_session:
+                                reset_smtp_connection()
+                                yield f"data: {json.dumps({'type': 'status', 'message': f'Verbindung wird erneuert (nach {sent_in_session} E-Mails)...'})}\n\n"
+
                             # Status: Sending email
                             yield f"data: {json.dumps({'type': 'status', 'message': f'Sende E-Mail an {customer_email}... ({processed_groups + 1}/{total_groups})'})}\n\n"
 
@@ -4165,6 +4183,7 @@ Der Inhalt dieser Nachricht ist vertraulich. Sollte diese Nachricht nicht für S
 
                             if send_success:
                                 success_count += len(pdf_paths)
+                                sent_in_session += 1
                                 # Log email sent event for each invoice
                                 for invoice in invoice_list:
                                     log_invoice_event(
