@@ -63,6 +63,13 @@ backups/
 temp/
 tmp/
 
+# Lose Test-/Vergleichs-PDFs im Projektordner (Vorlagen werden explizit getrackt)
+*_ALT.pdf
+*_NEU.pdf
+
+# Archiv/Ablage für ausrangierte Skripte & Dateien
+Old/
+
 # API Keys (falls in separaten Dateien)
 *api_key*
 *apikey*
