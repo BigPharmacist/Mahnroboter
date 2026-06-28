@@ -597,12 +597,146 @@ def is_storno_document(text: str) -> bool:
     return False
 
 
+# Salutation tokens that anchor the recipient name: the real name is always the
+# line directly AFTER one of these (Anrede), even when an extra "Ortsteil" line
+# follows it (the 4-line-address case that previously broke parsing).
+SALUTATION_TOKENS = {"herr", "herrn", "frau", "familie", "fam", "eheleute", "firma"}
+
+# Lines that mark the END of the recipient address block (start of invoice body).
+_BLOCK_STOP_PREFIXES = (
+    "rechnung", "medikation", "datum:", "kunden-nr", "rechnungs-nr",
+    "deckblatt", "abrechnungszeitraum", "mahnung", "zahlungserinnerung",
+)
+
+# A PLZ+Ort line, e.g. "55232 Alzey" (also tolerates double spaces).
+_PLZ_RE = re.compile(r"^\d{5}\b")
+# The sender's inline return address, e.g. "Apotheke am Damm, Am Damm 17, 55232 Alzey".
+# It marks where the recipient address block begins (right after it).
+_INLINE_ADDRESS_RE = re.compile(r",\s*\d{5}\s+\S")
+
+
+def _is_salutation(line: str) -> bool:
+    token = line.strip().lower().rstrip(".")
+    if token in {t.rstrip(".") for t in SALUTATION_TOKENS}:
+        return True
+    # "Herr Dr.", "Frau Dr. med.", "Herr und Frau", "Frau u. Herr" etc.
+    return bool(re.match(r"^(herr|frau)\b.*\b(dr|frau|herr)\b", line.strip().lower()))
+
+
+def _has_digit(text: str) -> bool:
+    return any(c.isdigit() for c in text)
+
+
+def _is_ortsteil(line: str, city_words: set[str]) -> bool:
+    """True if every word of *line* also appears in the city - i.e. the line is an
+    "Ortsteil" that merely repeats the city (the 4-line-address trap), not a name."""
+    words = re.findall(r"\w+", line.lower())
+    return bool(words) and all(w in city_words for w in words)
+
+
+def _find_recipient_block(lines: list[str]) -> list[str]:
+    """Return the recipient address lines: everything after the sender's inline
+    return address and before the first invoice-body/metadata line. [] if not found."""
+    start = None
+    for idx, raw in enumerate(lines):
+        if _INLINE_ADDRESS_RE.search(raw):
+            start = idx + 1
+            break
+    if start is None:
+        return []
+
+    block: list[str] = []
+    for raw in lines[start:]:
+        token = raw.strip()
+        if not token:
+            continue
+        low = token.lower()
+        if any(low.startswith(prefix) for prefix in _BLOCK_STOP_PREFIXES):
+            break
+        block.append(token)
+        if len(block) >= 8:  # safety guard - addresses are never this long
+            break
+    return block
+
+
+def _parse_recipient_block(block: list[str]) -> tuple[str, str, str, bool] | None:
+    """Parse a recipient address block into (name, street, city, incomplete).
+
+    Layout (lines that may be present):
+        [Anrede/Titel]  Name  [Ortsteil ...]  Straße+Nr  [PLZ Ort]
+
+    The name is anchored on the street/PLZ (the proven behaviour), but lines that
+    only repeat the city ("Ortsteil") are skipped so the real name above them is
+    used - this is what fixes the 4-line addresses.
+
+    Returns None if the block cannot be interpreted as an address.
+    """
+    if not block:
+        return None
+
+    # --- Preferred: complete address with a PLZ+Ort line ---
+    plz_idx = next((i for i, line in enumerate(block) if _PLZ_RE.match(line)), None)
+    if plz_idx is not None:
+        # Street = nearest line before the PLZ that contains a house number.
+        street_idx = None
+        for i in range(plz_idx - 1, -1, -1):
+            if _has_digit(block[i]):
+                street_idx = i
+                break
+        if street_idx is not None and street_idx >= 1:
+            city = re.sub(r"\s+", " ", block[plz_idx]).strip()
+            street = block[street_idx].strip()
+            # Walk up from the street, skipping "Ortsteil" lines that merely repeat
+            # the city (the 4-line-address trap), to find the real name.
+            city_words = set(re.findall(r"\w+", city.lower()))
+            name_idx = street_idx - 1
+            while name_idx > 0 and _is_ortsteil(block[name_idx], city_words):
+                name_idx -= 1
+            name = block[name_idx].strip()
+            # A bare salutation is not a name -> let the salutation fallback try.
+            if name and not _is_salutation(name) and not _is_ortsteil(name, city_words):
+                return name, street, city, False
+
+    # --- Fallback: no usable PLZ -> anchor on the salutation (Herr/Frau/...) ---
+    # Handles "Herr / Name / Ort / Straße" where the PDF omits the postal code.
+    if block and _is_salutation(block[0]) and len(block) >= 2:
+        name = block[1].strip()
+        rest = block[2:]
+        street_idx = None
+        for i in range(len(rest) - 1, -1, -1):
+            if _has_digit(rest[i]):
+                street_idx = i
+                break
+        street = rest[street_idx].strip() if street_idx is not None else ""
+        others = [rest[i].strip() for i in range(len(rest)) if i != street_idx]
+        city = others[0] if others else ""
+        if name and street and not _is_salutation(name):
+            # Incomplete: no proper PLZ in the PDF (never fabricate a default city).
+            return name, street, city, True
+
+    return None
+
+
 def extract_customer(lines: list[str]) -> tuple[str, str, str, bool]:
     """Extract customer name, street, and city separately from invoice lines.
 
     Returns:
         tuple[str, str, str, bool]: (customer_name, customer_street, customer_city, address_incomplete)
     """
+    # Primary: structured parse of the recipient block. The name always follows the
+    # salutation (Herr/Frau), so extra "Ortsteil" lines in 4-line addresses no longer
+    # get mistaken for the name.
+    parsed = _parse_recipient_block(_find_recipient_block(lines))
+    if parsed is not None:
+        name, street, city, incomplete = parsed
+        if incomplete:
+            logging.warning(
+                "⚠️ Unvollständige Adresse für '%s' (Straße '%s', Ort '%s') - keine PLZ im PDF",
+                name, street, city,
+            )
+        return name, street, city, incomplete
+
+    # ---- Fallback heuristics for PDFs whose layout we don't recognise ----
     # Try to find customer info by looking for address pattern with name followed by street and city
     # Format: Name, Street + Number, PLZ + City
     for idx in range(len(lines) - 2):
@@ -671,8 +805,8 @@ def extract_customer(lines: list[str]) -> tuple[str, str, str, bool]:
             # Additional check: name should look like a person or business name
             # Avoid matching random text like "Menge PZN" etc.
             if not any(kw in name for kw in ["Menge", "PZN", "Artikel", "Pack", "MwSt", "Netto", "Summe"]):
-                logging.warning(f"⚠️ Unvollständige Adresse für '{name}' (nur Straße '{addr_line1}') - verwende Standard-Stadt 'Alzey'")
-                return name, addr_line1, "55232 Alzey", True  # Incomplete address!
+                logging.warning(f"⚠️ Unvollständige Adresse für '{name}' (nur Straße '{addr_line1}') - keine PLZ/Ort im PDF")
+                return name, addr_line1, "", True  # Incomplete address - never fabricate a city!
 
     # Fallback: try old method with markers
     for idx, raw in enumerate(lines):
@@ -690,11 +824,12 @@ def extract_customer(lines: list[str]) -> tuple[str, str, str, bool]:
             if not name or not addr_line1:
                 raise ValueError("Adresse enthält leere Zeilen")
 
-            # If addr_line2 is missing or incomplete, use default
+            # If addr_line2 is missing or incomplete, mark incomplete (never fabricate a city)
             address_incomplete = False
             if not addr_line2 or (len(addr_line2) >= 5 and not addr_line2[:5].isdigit()):
-                logging.warning(f"⚠️ Unvollständige Adresse für '{name}' - verwende Standard-Stadt 'Alzey'")
-                addr_line2 = "55232 Alzey"
+                logging.warning(f"⚠️ Unvollständige Adresse für '{name}' - keine PLZ/Ort im PDF")
+                if not addr_line2 or not addr_line2[:5].isdigit():
+                    addr_line2 = ""
                 address_incomplete = True
 
             street = addr_line1
