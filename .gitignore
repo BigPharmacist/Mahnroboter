@@ -57,6 +57,7 @@ logs/
 *.bak
 backup/
 backups/
+_backup_*/
 
 # Generierte PDFs und temporäre Dateien
 *.pdf.tmp

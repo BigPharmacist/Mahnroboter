@@ -1,0 +1,416 @@
+{% extends "base.html" %}
+
+{% block title %}Rezepte zuordnen{% endblock %}
+
+{% block content %}
+<header>
+  <h1>Rezepte zuordnen</h1>
+  <p class="subtitle">
+    Abrechnungsmonat <strong>{{ batch['billing_month'] | german_month }}</strong>
+    &middot; {{ pages|length }} Seiten
+    &middot; <a href="{{ url_for('rezepte') }}">&laquo; zur&uuml;ck zur &Uuml;bersicht</a>
+  </p>
+</header>
+
+<div style="display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap; margin:.5rem 0;">
+  <div id="assignBanner" class="subtitle" style="margin:0;">
+    <span id="assignedCount">0</span> / {{ pages|length }} zugeordnet
+  </div>
+  <div style="display:flex; align-items:center; gap:.6rem;">
+    <i class="fas fa-magnifying-glass-minus" style="color:#64748b;"></i>
+    <input type="range" id="sizeSlider" min="240" max="760" step="40" value="380" style="width:220px;">
+    <i class="fas fa-magnifying-glass-plus" style="color:#64748b;"></i>
+    <span class="subtitle" style="margin:0; min-width:3.5rem;">Größe</span>
+  </div>
+</div>
+
+<style>
+  #custDropdown .cust-item:hover { background:#e0ecff; }
+</style>
+<!-- Eigenes Vorschlags-Dropdown (statt nativer datalist), voll gestylt -->
+<div id="custDropdown" style="
+     position:absolute; display:none; z-index:1000; background:#fff; color:#1e293b;
+     border:1px solid #cbd5e1; border-radius:6px; box-shadow:0 6px 18px rgba(15,23,42,.18);
+     max-height:280px; overflow-y:auto; font-size:.9rem;"></div>
+
+{% if assignments %}
+<section style="margin:.5rem 0 1.25rem; padding:.9rem; border:1px solid #e2e8f0; border-radius:8px; background:#f8fafc;">
+  <div style="font-weight:600; margin-bottom:.5rem;">
+    <i class="fas fa-eye"></i> Vorschau der zugeordneten Rezepte
+    <span class="subtitle" style="font-weight:400;">— reine Anzeige, es wird nichts versendet</span>
+  </div>
+  <table style="width:auto; background:transparent; box-shadow:none;">
+    <tbody>
+      {% for a in assignments %}
+      <tr>
+        <td style="border:none; padding:.2rem .6rem .2rem 0;">
+          <strong>{{ a['display'] }}</strong>
+          {% if a['name'] != a['display'] %}<span class="subtitle">({{ a['name'] }})</span>{% endif %}
+        </td>
+        <td style="border:none; padding:.2rem .6rem;">{{ a['n'] }} Rezept(e) · {{ a['month_label'] }}</td>
+        <td style="border:none; padding:.2rem .3rem;">
+          <a class="btn btn-secondary btn-sm" target="_blank"
+             href="{{ url_for('rezepte_vorschau', customer=a['name'], month=a['month'], mode='brief') }}">
+            <i class="fas fa-file-lines"></i> Brief (4-auf-1)
+          </a>
+        </td>
+        <td style="border:none; padding:.2rem .3rem;">
+          <a class="btn btn-secondary btn-sm" target="_blank"
+             href="{{ url_for('rezepte_vorschau', customer=a['name'], month=a['month'], mode='email') }}">
+            <i class="fas fa-paperclip"></i> E-Mail-Anhang
+          </a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<section class="rezept-grid" id="rezeptGrid"
+         style="display:grid; grid-template-columns:repeat(auto-fill, minmax(var(--cardw, 380px), 1fr)); gap:1.25rem;">
+  {% for p in pages %}
+  <div class="rezept-card" data-page-id="{{ p['id'] }}"
+       style="border:1px solid #ddd; border-radius:8px; padding:.75rem; background:#fff;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:.5rem;">
+      <strong>Seite {{ p['page_number'] }}</strong>
+      <span class="save-indicator" style="font-size:.8rem; color:#28a745; visibility:hidden;">
+        <i class="fas fa-check"></i> gespeichert
+      </span>
+    </div>
+
+    <div class="rezept-frame" style="position:relative; width:100%; height:var(--frameh, 532px); background:#f5f5f5; border:1px solid #eee; overflow:hidden;">
+      <iframe class="rezept-iframe"
+              data-base="{{ url_for('rezepte_page_pdf', page_id=p['id']) }}"
+              data-rotation="{{ p['rotation'] }}"
+              style="width:100%; height:100%; border:0;"
+              title="Rezept Seite {{ p['page_number'] }}"></iframe>
+    </div>
+
+    <div style="display:flex; gap:.5rem; margin:.5rem 0;">
+      <button type="button" class="btn btn-secondary btn-sm rotate-btn" data-direction="left" title="Nach links drehen">
+        <i class="fas fa-rotate-left"></i>
+      </button>
+      <button type="button" class="btn btn-secondary btn-sm rotate-btn" data-direction="right" title="Nach rechts drehen">
+        <i class="fas fa-rotate-right"></i>
+      </button>
+      <a class="btn btn-secondary btn-sm" target="_blank"
+         href="{{ url_for('rezepte_page_pdf', page_id=p['id']) }}" title="In neuem Tab oeffnen">
+        <i class="fas fa-up-right-from-square"></i>
+      </a>
+    </div>
+
+    <div class="form-group" style="margin-bottom:.4rem;">
+      <label style="font-size:.8rem;">Kunde</label>
+      <input type="text" class="form-control customer-input"
+             autocomplete="off"
+             placeholder="Kunde suchen..."
+             style="color:#1e293b; background:#fff;"
+             data-current="{{ p['customer_name'] or '' }}">
+    </div>
+    <div class="form-group" style="margin-bottom:0;">
+      <label style="font-size:.8rem;">Rechnung (zuletzt importierte = Vorgabe)</label>
+      <select class="form-control invoice-select" style="color:#1e293b; background:#fff;"
+              data-invoice="{{ p['invoice_id'] if p['invoice_id'] is not none else '' }}">
+        <option value="">— keine —</option>
+      </select>
+    </div>
+  </div>
+  {% endfor %}
+</section>
+
+<script>
+(function () {
+  // Anzeigename -> interner Kundenschluessel
+  const CUSTOMERS = {{ customers | tojson }};
+  const displayToName = {};
+  const nameToDisplay = {};
+  CUSTOMERS.forEach(function (c) {
+    displayToName[c.display] = c.name;
+    nameToDisplay[c.name] = c.display;
+  });
+
+  // Vorgeladene Rechnungen je bereits zugeordnetem Kunden {name: [ {id,number,date,amount} ]}
+  const INVOICE_MAP = {{ invoice_map | tojson }};
+
+  function invoiceLabel(inv) {
+    return 'Nr. ' + inv.number + ' · ' + inv.date + ' · ' + inv.amount;
+  }
+
+  // Rechnungs-Pulldown einer Karte befuellen; selectedId vorwaehlen.
+  function fillInvoiceSelect(sel, invoices, selectedId) {
+    const cur = selectedId != null ? String(selectedId) : '';
+    let html = '<option value="">— keine —</option>';
+    (invoices || []).forEach(function (inv, i) {
+      const marker = i === 0 ? ' (zuletzt importiert)' : '';
+      const selAttr = String(inv.id) === cur ? ' selected' : '';
+      html += '<option value="' + inv.id + '"' + selAttr + '>' + invoiceLabel(inv) + marker + '</option>';
+    });
+    sel.innerHTML = html;
+  }
+
+  // Rechnungen eines Kunden holen (Cache: INVOICE_MAP)
+  function getInvoices(name) {
+    if (INVOICE_MAP[name]) return Promise.resolve(INVOICE_MAP[name]);
+    return fetch('/rezepte/api/customer-invoices?customer=' + encodeURIComponent(name))
+      .then(function (r) { return r.json(); })
+      .then(function (d) { INVOICE_MAP[name] = d.invoices || []; return INVOICE_MAP[name]; })
+      .catch(function () { return []; });
+  }
+
+  // Globale Kartengroesse (gilt fuer alle Karten, gemerkt in localStorage)
+  const grid = document.getElementById('rezeptGrid');
+  const slider = document.getElementById('sizeSlider');
+  function applySize(px) {
+    const w = parseInt(px, 10) || 380;
+    grid.style.setProperty('--cardw', w + 'px');
+    grid.style.setProperty('--frameh', Math.round(w * 1.4) + 'px'); // DIN A6 Hochformat ~ 1:1.4
+  }
+  const savedSize = localStorage.getItem('rezeptCardSize');
+  if (savedSize) slider.value = savedSize;
+  applySize(slider.value);
+  // Waehrend des Ziehens nur die Rahmen skalieren (fluessig)
+  slider.addEventListener('input', function () {
+    applySize(slider.value);
+    localStorage.setItem('rezeptCardSize', slider.value);
+  });
+  // Beim Loslassen die PDFs neu laden, damit sie sich an die neue Groesse einpassen
+  slider.addEventListener('change', reloadFrames);
+
+  function frameSrc(base, rotation) {
+    // ?z=<groesse> erzwingt beim Groessenwechsel ein Neuladen -> PDF passt sich ein.
+    // Cache-Bust ueber Rotation; Toolbar/Navigation des PDF-Viewers ausblenden.
+    return base + '?r=' + rotation + '&z=' + slider.value + '#toolbar=0&navpanes=0&view=Fit';
+  }
+
+  function reloadFrames() {
+    document.querySelectorAll('.rezept-iframe').forEach(function (f) {
+      if (f.src) f.src = frameSrc(f.dataset.base, f.dataset.rotation || 0);
+    });
+  }
+
+  // Such-Index: sucht sowohl im Anzeigenamen als auch im internen Namen
+  const INDEX = CUSTOMERS.map(function (c) {
+    return { name: c.name, display: c.display, hay: (c.display + ' ' + c.name).toLowerCase() };
+  });
+
+  // Vorbelegung der Kundenfelder (Anzeigename aus gespeichertem Schluessel)
+  // und der Rechnungs-Pulldowns (aus vorgeladener INVOICE_MAP).
+  document.querySelectorAll('.rezept-card').forEach(function (card) {
+    const inp = card.querySelector('.customer-input');
+    const sel = card.querySelector('.invoice-select');
+    const cur = inp.getAttribute('data-current');
+    if (cur) inp.value = nameToDisplay[cur] || cur;
+    if (cur && INVOICE_MAP[cur]) {
+      fillInvoiceSelect(sel, INVOICE_MAP[cur], sel.getAttribute('data-invoice'));
+    }
+  });
+
+  // Zaehler "X / Y zugeordnet"
+  const totalPages = document.querySelectorAll('.rezept-card').length;
+  function refreshCount() {
+    let n = 0;
+    document.querySelectorAll('.customer-input').forEach(function (inp) {
+      if (inp.getAttribute('data-current')) n++;
+    });
+    document.getElementById('assignedCount').textContent = n;
+  }
+  refreshCount();
+
+  // Lazy-Load der eingebetteten PDFs (55 iframes auf einmal waeren zu schwer)
+  const io = new IntersectionObserver(function (entries, obs) {
+    entries.forEach(function (e) {
+      if (!e.isIntersecting) return;
+      const frame = e.target;
+      if (!frame.src) {
+        frame.src = frameSrc(frame.dataset.base, frame.dataset.rotation || 0);
+      }
+      obs.unobserve(frame);
+    });
+  }, { rootMargin: '300px' });
+  document.querySelectorAll('.rezept-iframe').forEach(function (f) { io.observe(f); });
+
+  function showSaved(card) {
+    const ind = card.querySelector('.save-indicator');
+    if (!ind) return;
+    ind.style.visibility = 'visible';
+    clearTimeout(ind._t);
+    ind._t = setTimeout(function () { ind.style.visibility = 'hidden'; }, 1500);
+  }
+
+  // Drehen
+  document.querySelectorAll('.rotate-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      const card = btn.closest('.rezept-card');
+      const pageId = card.dataset.pageId;
+      const direction = btn.dataset.direction;
+      fetch('/rezepte/page/' + pageId + '/rotate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ direction: direction })
+      })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data.ok) return;
+        const frame = card.querySelector('.rezept-iframe');
+        frame.dataset.rotation = data.rotation;
+        frame.src = frameSrc(frame.dataset.base, data.rotation); // neu laden = serverseitig gedreht
+        showSaved(card);
+      })
+      .catch(function () { alert('Drehen fehlgeschlagen.'); });
+    });
+  });
+
+  // ---- Kunde zuordnen: eigenes Vorschlags-Dropdown (dunkel auf weiss) ----
+  const dd = document.getElementById('custDropdown');
+  let ddInput = null;     // aktuell aktives Eingabefeld
+  let ddMatches = [];     // aktuelle Treffer
+  let ddHi = -1;          // markierter Eintrag
+
+  function saveAssignment(inp, customerName, displayText) {
+    const card = inp.closest('.rezept-card');
+    const pageId = card.dataset.pageId;
+    inp.style.borderColor = '';
+    inp.title = '';
+    fetch('/rezepte/page/' + pageId + '/assign', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ customer_name: customerName })
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (!data.ok) return;
+      inp.setAttribute('data-current', data.customer_name || '');
+      inp.value = data.customer_name ? (displayText || nameToDisplay[data.customer_name] || data.customer_name) : '';
+      // Rechnungs-Pulldown auf den neuen Kunden umstellen (Server hat die
+      // zuletzt importierte Rechnung als invoice_id vorbelegt).
+      const sel = card.querySelector('.invoice-select');
+      if (!data.customer_name) {
+        fillInvoiceSelect(sel, [], '');
+        sel.setAttribute('data-invoice', '');
+      } else {
+        getInvoices(data.customer_name).then(function (invs) {
+          fillInvoiceSelect(sel, invs, data.invoice_id);
+          sel.setAttribute('data-invoice', data.invoice_id != null ? String(data.invoice_id) : '');
+        });
+      }
+      showSaved(card);
+      refreshCount();
+    })
+    .catch(function () { alert('Speichern fehlgeschlagen.'); });
+  }
+
+  function positionDropdown(inp) {
+    const r = inp.getBoundingClientRect();
+    dd.style.left = (r.left + window.scrollX) + 'px';
+    dd.style.top = (r.bottom + window.scrollY + 2) + 'px';
+    dd.style.width = r.width + 'px';
+  }
+
+  function renderDropdown() {
+    if (!ddMatches.length) { dd.style.display = 'none'; return; }
+    let html = '';
+    ddMatches.forEach(function (m, i) {
+      const sub = (m.name !== m.display)
+        ? '<div style="font-size:.75rem; color:#64748b;">intern: ' + escapeHtml(m.name) + '</div>' : '';
+      html += '<div class="cust-item" data-i="' + i + '" style="padding:.4rem .6rem; cursor:pointer;'
+            + (i === ddHi ? ' background:#e0ecff;' : '') + '">'
+            + '<div>' + escapeHtml(m.display) + '</div>' + sub + '</div>';
+    });
+    dd.innerHTML = html;
+    dd.style.display = 'block';
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (ch) {
+      return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[ch];
+    });
+  }
+
+  function openFor(inp) {
+    ddInput = inp;
+    const q = inp.value.trim().toLowerCase();
+    ddMatches = INDEX.filter(function (c) {
+      return !q || c.hay.indexOf(q) !== -1;
+    }).slice(0, 30);
+    ddHi = ddMatches.length ? 0 : -1;
+    positionDropdown(inp);
+    renderDropdown();
+  }
+
+  function hideDropdown() { dd.style.display = 'none'; ddInput = null; ddMatches = []; ddHi = -1; }
+
+  // Klick auf einen Vorschlag
+  dd.addEventListener('mousedown', function (e) {
+    const item = e.target.closest('.cust-item');
+    if (!item || !ddInput) return;
+    e.preventDefault(); // Fokus im Feld halten
+    const m = ddMatches[parseInt(item.dataset.i, 10)];
+    if (m) saveAssignment(ddInput, m.name, m.display);
+    hideDropdown();
+  });
+
+  document.querySelectorAll('.customer-input').forEach(function (inp) {
+    inp.addEventListener('focus', function () { openFor(inp); });
+    inp.addEventListener('input', function () { openFor(inp); });
+    inp.addEventListener('keydown', function (e) {
+      if (dd.style.display === 'none') return;
+      if (e.key === 'ArrowDown') { e.preventDefault(); ddHi = Math.min(ddHi + 1, ddMatches.length - 1); renderDropdown(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); ddHi = Math.max(ddHi - 1, 0); renderDropdown(); }
+      else if (e.key === 'Enter') {
+        e.preventDefault();
+        const m = ddMatches[ddHi];
+        if (m) { saveAssignment(inp, m.name, m.display); hideDropdown(); inp.blur(); }
+      } else if (e.key === 'Escape') { hideDropdown(); }
+    });
+    inp.addEventListener('blur', function () {
+      // kurze Verzoegerung, damit ein Klick im Dropdown noch greift
+      setTimeout(function () {
+        if (dd.style.display !== 'none' && ddInput === inp) { /* Klick laeuft */ }
+        const val = inp.value.trim();
+        if (val === '') {
+          if (inp.getAttribute('data-current')) saveAssignment(inp, '', '');
+          hideDropdown();
+          return;
+        }
+        // Freitext: exakter Treffer (Anzeige- oder interner Name)?
+        const low = val.toLowerCase();
+        const exact = INDEX.find(function (c) {
+          return c.display.toLowerCase() === low || c.name.toLowerCase() === low;
+        });
+        if (exact) { saveAssignment(inp, exact.name, exact.display); }
+        else {
+          // kein Treffer -> auf vorherigen Stand zuruecksetzen
+          const cur = inp.getAttribute('data-current');
+          inp.value = cur ? (nameToDisplay[cur] || cur) : '';
+        }
+        hideDropdown();
+      }, 150);
+    });
+  });
+
+  window.addEventListener('scroll', function () { if (ddInput) hideDropdown(); }, true);
+  window.addEventListener('resize', function () { if (ddInput) hideDropdown(); });
+
+  // Rechnung pro Seite aendern (Auto-Save)
+  document.querySelectorAll('.invoice-select').forEach(function (sel) {
+    sel.addEventListener('change', function () {
+      const card = sel.closest('.rezept-card');
+      const pageId = card.dataset.pageId;
+      fetch('/rezepte/page/' + pageId + '/assign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ invoice_id: sel.value || null })
+      })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data.ok) { alert('Speichern fehlgeschlagen.'); return; }
+        sel.setAttribute('data-invoice', data.invoice_id != null ? String(data.invoice_id) : '');
+        showSaved(card);
+      })
+      .catch(function () { alert('Speichern fehlgeschlagen.'); });
+    });
+  });
+})();
+</script>
+{% endblock %}

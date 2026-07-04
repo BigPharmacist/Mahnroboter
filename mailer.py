@@ -256,6 +256,7 @@ def send_invoices_batch_email(
     smtp_config: Optional[SMTPConfig] = None,
     invoice_list: Optional[List] = None,
     other_open_invoices: Optional[List] = None,
+    prescription_count: int = 0,
 ) -> bool:
     """
     Send multiple invoices via email with a nice message from the pharmacy.
@@ -348,9 +349,21 @@ def send_invoices_batch_email(
         else:
             invoice_text = "anbei senden wir Ihnen Ihre aktuellen Rechnungen."
 
+        # Hinweis zu beigefuegten Rezept-Scans (nur wenn Rezepte angehaengt sind)
+        prescription_notice = ""
+        if prescription_count and prescription_count > 0:
+            prescription_notice = (
+                "\nInformation für Privatversicherte\n"
+                "Damit Sie alle Unterlagen sofort zur Hand haben, fügen wir Ihrer Abrechnung "
+                "ab sofort einen Scan Ihrer Originalrezepte im Anhang bei. Erfahrungsgemäß "
+                "erkennen die meisten privaten Krankenversicherungen diese Kopien für die "
+                "Erstattung an. Möchten Sie die Originale dennoch per Post erhalten, genügt "
+                "eine kurze Nachricht an uns – wir schicken sie Ihnen dann umgehend zu.\n"
+            )
+
         email_body = f"""{greeting},
 
-{invoice_text}{invoice_details}{other_open_details}
+{invoice_text}{invoice_details}{other_open_details}{prescription_notice}
 Wir bedanken uns herzlich für Ihr Vertrauen und Ihre Treue. ✨
 Sollten Sie Fragen zu Ihrer Rechnung haben, stehen wir Ihnen selbstverständlich gerne zur Verfügung.
 

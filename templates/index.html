@@ -43,6 +43,9 @@
         <button id="pending-imports-button" class="scan-button pending-imports-button" style="display: none;">
           ⚠️ Pending Imports <span id="pending-imports-badge" class="filter-badge"></span>
         </button>
+        <button id="auto-mapped-button" class="scan-button" style="display: none;" onclick="showAutoMappedModal()">
+          ⚙️ Auto-zugeordnet <span id="auto-mapped-badge" class="filter-badge"></span>
+        </button>
       </div>
       <span id="scan-status" class="scan-status"></span>
     </div>
@@ -2349,6 +2352,130 @@
     </div>
   </div>
 </div>
+
+<!-- Auto-zugeordnet: Wiedervorlage-Liste zur einmaligen Kontrolle -->
+<div id="auto-mapped-modal" class="modal">
+  <div class="modal-content" style="max-width: 720px;">
+    <div class="modal-header">
+      <h2>⚙️ Automatisch zugeordnet – bitte prüfen</h2>
+      <p style="margin: 0.5rem 0 0 0; color: #666; font-size: 0.95rem;">
+        <span id="auto-mapped-count">0</span> Zuordnung(en) wurden anhand gespeicherter Regeln automatisch vorgenommen.
+      </p>
+    </div>
+    <div class="modal-body" style="max-height: 60vh; overflow-y: auto;">
+      <div id="auto-mapped-list"></div>
+    </div>
+    <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
+      <button class="btn-resolve-footer" onclick="confirmAllAutoMapped()">✓ Alle bestätigen</button>
+      <button class="modal-close-btn" onclick="document.getElementById('auto-mapped-modal').style.display='none'">Später</button>
+    </div>
+  </div>
+</div>
+
+<style>
+.auto-mapped-item { display: flex; justify-content: space-between; align-items: center;
+  gap: 1rem; padding: 0.75rem 1rem; border: 1px solid #e0e0e0; border-radius: 6px; margin-bottom: 0.6rem; }
+.auto-mapped-info { min-width: 0; }
+.auto-mapped-info .auto-from { color: #b00; font-weight: 600; }
+.auto-mapped-info .auto-arrow { color: #999; margin: 0 0.4rem; }
+.auto-mapped-info .auto-to { color: #1a7f37; font-weight: 700; }
+.auto-mapped-info .auto-addr { font-size: 0.85rem; color: #666; margin-top: 0.2rem; }
+.auto-mapped-actions { display: flex; gap: 0.4rem; flex-shrink: 0; }
+.btn-auto-ok { background: #1a7f37; color: #fff; border: none; border-radius: 4px; padding: 0.4rem 0.8rem; cursor: pointer; }
+.btn-auto-reject { background: #fff; color: #b00; border: 1px solid #b00; border-radius: 4px; padding: 0.4rem 0.8rem; cursor: pointer; }
+</style>
+
+<script>
+(function () {
+  function escAuto(s) {
+    return (s == null ? '' : String(s)).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  window.showAutoMappedModal = function () {
+    return fetch('/api/auto-mapped').then(function (r) { return r.json(); }).then(function (data) {
+      var modal = document.getElementById('auto-mapped-modal');
+      var list = document.getElementById('auto-mapped-list');
+      var countEl = document.getElementById('auto-mapped-count');
+      var arr = (data && data.auto_mapped) || [];
+      countEl.textContent = arr.length;
+      if (!arr.length) {
+        list.innerHTML = '<p style="color:#666;">Keine offenen automatischen Zuordnungen.</p>';
+      } else {
+        list.innerHTML = arr.map(function (it) {
+          return '<div class="auto-mapped-item" data-id="' + it.id + '">'
+            + '<div class="auto-mapped-info">'
+            + '<span class="auto-from">' + escAuto(it.mapped_from || '—') + '</span>'
+            + '<span class="auto-arrow">→</span>'
+            + '<span class="auto-to">' + escAuto(it.customer_name) + '</span>'
+            + '<div class="auto-addr">' + escAuto(it.customer_street) + ', ' + escAuto(it.customer_city)
+            + ' · ' + (it.amount_euros || 0).toFixed(2) + ' €</div>'
+            + '</div>'
+            + '<div class="auto-mapped-actions">'
+            + '<button class="btn-auto-ok" onclick="confirmAutoMapped([' + it.id + '])">✓ ok</button>'
+            + '<button class="btn-auto-reject" onclick="rejectAutoMapped(' + it.id + ')">✗ falsch</button>'
+            + '</div></div>';
+        }).join('');
+      }
+      modal.style.display = 'flex';
+    });
+  };
+
+  function afterAction() {
+    fetch('/api/auto-mapped').then(function (r) { return r.json(); }).then(function (data) {
+      if (!data || !data.count) {
+        document.getElementById('auto-mapped-modal').style.display = 'none';
+        window.location.reload();
+      } else {
+        window.showAutoMappedModal();
+      }
+    });
+  }
+
+  window.confirmAutoMapped = function (ids) {
+    fetch('/api/auto-mapped/confirm', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: ids })
+    }).then(function (r) { return r.json(); }).then(afterAction);
+  };
+
+  window.confirmAllAutoMapped = function () {
+    fetch('/api/auto-mapped/confirm', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ all: true })
+    }).then(function (r) { return r.json(); }).then(function () {
+      document.getElementById('auto-mapped-modal').style.display = 'none';
+      window.location.reload();
+    });
+  };
+
+  window.rejectAutoMapped = function (id) {
+    if (!confirm('War diese automatische Zuordnung falsch?\n\nDie gespeicherte Regel wird gelöscht und die Rechnung zur manuellen Korrektur (Personenverwaltung) markiert.')) return;
+    fetch('/api/auto-mapped/reject', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: id })
+    }).then(function (r) { return r.json(); }).then(afterAction);
+  };
+
+  // Beim Seitenaufbau: Button/Badge setzen und Liste automatisch öffnen,
+  // solange es offene Auto-Zuordnungen gibt (nach Scan lädt die Seite neu).
+  document.addEventListener('DOMContentLoaded', function () {
+    fetch('/api/auto-mapped').then(function (r) { return r.json(); }).then(function (data) {
+      if (data && data.count > 0) {
+        var btn = document.getElementById('auto-mapped-button');
+        var badge = document.getElementById('auto-mapped-badge');
+        if (btn) btn.style.display = '';
+        if (badge) badge.textContent = data.count;
+        // Nicht aufpoppen, wenn gerade das Pending-Modal offen ist.
+        var pending = document.getElementById('pending-imports-modal');
+        var pendingOpen = pending && getComputedStyle(pending).display !== 'none';
+        if (!pendingOpen) setTimeout(window.showAutoMappedModal, 400);
+      }
+    }).catch(function () {});
+  });
+})();
+</script>
 
 <style>
 .pending-import-item {

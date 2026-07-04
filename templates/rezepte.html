@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+
+{% block title %}Rezepte{% endblock %}
+
+{% block content %}
+<header>
+  <h1>Privatrezepte</h1>
+  <p class="subtitle">Monats-Scan importieren, Seiten drehen und Kunden zuordnen</p>
+</header>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    <div class="flash-messages">
+      {% for category, message in messages %}
+        <div class="flash flash-{{ category }}">{{ message }}</div>
+      {% endfor %}
+    </div>
+  {% endif %}
+{% endwith %}
+
+<section class="search-section">
+  <form action="{{ url_for('rezepte_upload') }}" method="post" enctype="multipart/form-data" class="upload-form">
+    <div class="form-row" style="display:flex; gap:1rem; align-items:flex-end; flex-wrap:wrap;">
+      <div class="form-group">
+        <label for="monthSelect">Abrechnungsmonat</label>
+        <select id="monthSelect" class="form-control" style="color:#1e293b; background:#fff;">
+          {% for m in months %}
+          <option value="{{ m['value'] }}" {% if m['value'] == default_month %}selected{% endif %}>{{ m['label'] }}</option>
+          {% endfor %}
+          <option value="__custom__">anderer Monat…</option>
+        </select>
+        <input type="month" id="customMonth" class="form-control"
+               value="{{ default_month }}" style="display:none; margin-top:.4rem; color:#1e293b; background:#fff;">
+        <input type="hidden" name="billing_month" id="billingMonth" value="{{ default_month }}">
+      </div>
+      <div class="form-group" style="flex:1; min-width:240px;">
+        <label for="pdf">Monats-Scan (PDF mit allen Rezepten)</label>
+        <input type="file" id="pdf" name="pdf" accept="application/pdf,.pdf" class="form-control" required>
+      </div>
+      <div class="form-group">
+        <button type="submit" class="btn btn-primary">
+          <i class="fas fa-upload"></i> Importieren &amp; splitten
+        </button>
+      </div>
+    </div>
+    <p class="subtitle" style="margin-top:.5rem;">Das PDF wird automatisch in Einzelseiten zerlegt (z.B. 55 Seiten = 55 Rezepte).</p>
+  </form>
+</section>
+
+<section class="customers-container">
+  <h2>Importierte Stapel</h2>
+  {% if batches %}
+  <table class="data-table" style="width:100%;">
+    <thead>
+      <tr>
+        <th>Monat</th>
+        <th>Datei</th>
+        <th>Seiten</th>
+        <th>Zugeordnet</th>
+        <th>Importiert</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for b in batches %}
+      <tr>
+        <td>{{ b['billing_month'] | german_month }}</td>
+        <td>{{ b['original_filename'] }}</td>
+        <td>{{ b['pages'] }}</td>
+        <td>
+          {% set assigned = b['assigned'] or 0 %}
+          <span class="badge {% if assigned == b['pages'] and b['pages'] > 0 %}badge-success{% else %}badge-warning{% endif %}">
+            {{ assigned }} / {{ b['pages'] }}
+          </span>
+        </td>
+        <td>{{ b['created_at'] }}</td>
+        <td style="white-space:nowrap;">
+          <a href="{{ url_for('rezepte_zuordnung', batch_id=b['id']) }}" class="btn btn-primary btn-sm">
+            <i class="fas fa-pen"></i> Zuordnen
+          </a>
+          <form action="{{ url_for('rezepte_delete', batch_id=b['id']) }}" method="post" style="display:inline;"
+                onsubmit="return confirm('Diesen Rezept-Stapel inkl. aller Seiten wirklich loeschen?');">
+            <button type="submit" class="btn btn-secondary btn-sm"><i class="fas fa-trash"></i></button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="subtitle">Noch keine Stapel importiert.</p>
+  {% endif %}
+</section>
+
+<script>
+(function () {
+  const sel = document.getElementById('monthSelect');
+  const custom = document.getElementById('customMonth');
+  const hidden = document.getElementById('billingMonth');
+  function sync() {
+    if (sel.value === '__custom__') {
+      custom.style.display = '';
+      hidden.value = custom.value;
+    } else {
+      custom.style.display = 'none';
+      hidden.value = sel.value;
+    }
+  }
+  sel.addEventListener('change', sync);
+  custom.addEventListener('input', function () {
+    if (sel.value === '__custom__') hidden.value = custom.value;
+  });
+  sync();
+})();
+</script>
+{% endblock %}

@@ -231,7 +231,8 @@ def create_cover_letter_pdf(
     customer_address: str,
     current_month_invoices: List[Dict],
     older_open_invoices: List[Dict],
-    salutation: Optional[str] = None
+    salutation: Optional[str] = None,
+    include_prescription_notice: bool = False
 ) -> bytes:
     """
     Create a modern cover letter PDF for Sammelrechnungen.
@@ -463,6 +464,22 @@ def create_cover_letter_pdf(
             "wenn Sie dort diese Rechnung zusammen mit dem Zahlungsnachweis einreichen. Bitte senden Sie uns "
             "auch eine Kopie Ihres Befreiungsausweises zu. Bei Fragen helfen wir gerne weiter.")
     content_y = draw_justified_paragraph(c, text, left_margin, content_y, text_width, font_size=9)
+
+    # === HINWEIS PRIVATVERSICHERTE (nur wenn Rezepte beigefuegt sind) ===
+    if include_prescription_notice:
+        content_y -= 25
+        c.setFillColor(primary_color)
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(left_margin, content_y, "Information für Privatversicherte")
+
+        content_y -= 15
+        c.setFillColor(black)
+        rx_text = ("Damit Sie alle Unterlagen sofort zur Hand haben, fügen wir Ihrer Abrechnung ab sofort "
+                   "einen Scan Ihrer Originalrezepte auf den folgenden Seiten bei. Erfahrungsgemäß erkennen "
+                   "die meisten privaten Krankenversicherungen diese Kopien für die Erstattung an. Möchten Sie "
+                   "die Originale dennoch per Post erhalten, genügt eine kurze Nachricht an uns – wir schicken "
+                   "sie Ihnen dann umgehend zu.")
+        content_y = draw_justified_paragraph(c, rx_text, left_margin, content_y, text_width, font_size=9)
 
     # === SCHLUSS ===
     content_y -= 20

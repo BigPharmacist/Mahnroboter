@@ -31,6 +31,12 @@
         </a>
       </li>
       <li>
+        <a href="{{ url_for('rezepte') }}" class="nav-link {% if request.endpoint in ['rezepte', 'rezepte_zuordnung'] %}active{% endif %}">
+          <span class="nav-icon"><i class="fas fa-file-prescription"></i></span>
+          <span class="nav-label">Rezepte</span>
+        </a>
+      </li>
+      <li>
         <a href="{{ url_for('mahnungen') }}" class="nav-link {% if request.endpoint == 'mahnungen' %}active{% endif %}">
           <span class="nav-icon"><i class="fas fa-exclamation-triangle"></i></span>
           <span class="nav-label">Mahnungen</span>

@@ -68,6 +68,7 @@ from invoice_tracker import (
     process_pdf_file,
     log_invoice_event,
     resolve_pending_import,
+    save_import_mapping,
     determine_genders_batch_via_ai,
     validate_customer_names_batch_via_ai,
 )
@@ -77,6 +78,14 @@ from salutation import (
     determine_salutation_for_customer,
 )
 from letterxpress_client import LetterXpressClient
+from rezepte import (
+    init_rezepte_schema,
+    register_rezepte_routes,
+    append_prescriptions_for_invoices,
+    build_scan_pdfs_for_invoices,
+    billing_month_for_invoices,
+    prescription_basename,
+)
 
 # Load environment variables
 load_dotenv()
@@ -143,6 +152,9 @@ def create_app(config: Optional[dict] = None) -> Flask:
     if config:
         app.config.update(config)
 
+    # Secret key for flash messages / sessions (local internal app)
+    app.secret_key = os.getenv("FLASK_SECRET_KEY", "mahnroboter-local-secret")
+
     # Configure logging with file handler for errors
     if not logging.getLogger().handlers:
         logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -162,6 +174,7 @@ def create_app(config: Optional[dict] = None) -> Flask:
     # Initialize database tables if they don't exist
     conn = sqlite3.connect(app.config["DATABASE"])
     init_db(conn)
+    init_rezepte_schema(conn)
     conn.commit()
     conn.close()
 
@@ -1592,6 +1605,96 @@ def create_app(config: Optional[dict] = None) -> Flask:
             logging.error(f"Fehler beim Auflösen des Imports: {e}")
             return jsonify({"error": str(e)}), 500
 
+    @app.route("/api/auto-mapped", methods=["GET"])
+    def get_auto_mapped() -> Response:
+        """List invoices that were auto-assigned via a saved mapping and still
+        await the user's one-time confirmation (the review list)."""
+        db_path = Path(app.config["DATABASE"])
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT id, customer_name, customer_street, customer_city,
+                       mapped_from, amount_cents, invoice_number, invoice_date
+                FROM invoices
+                WHERE auto_mapped = 1
+                ORDER BY customer_name, id
+                """
+            ).fetchall()
+        items = [
+            {
+                "id": r["id"],
+                "mapped_from": r["mapped_from"] or "",
+                "customer_name": r["customer_name"],
+                "customer_street": r["customer_street"] or "",
+                "customer_city": r["customer_city"] or "",
+                "amount_euros": (r["amount_cents"] or 0) / 100,
+                "invoice_number": r["invoice_number"],
+                "invoice_date": r["invoice_date"],
+            }
+            for r in rows
+        ]
+        return jsonify({"success": True, "auto_mapped": items, "count": len(items)})
+
+    @app.route("/api/auto-mapped/confirm", methods=["POST"])
+    def confirm_auto_mapped() -> Response:
+        """Confirm auto-mapped invoices (clear the review flag). Pass {"ids": [...]}
+        for specific ones, or {"all": true} to confirm every pending one."""
+        data = request.get_json(silent=True) or {}
+        ids = data.get("ids")
+        confirm_all = data.get("all", False)
+        db_path = Path(app.config["DATABASE"])
+        try:
+            with sqlite3.connect(db_path) as conn:
+                if confirm_all:
+                    cur = conn.execute("UPDATE invoices SET auto_mapped = 0 WHERE auto_mapped = 1")
+                elif ids:
+                    placeholders = ",".join("?" for _ in ids)
+                    cur = conn.execute(
+                        f"UPDATE invoices SET auto_mapped = 0 WHERE id IN ({placeholders})",
+                        list(ids),
+                    )
+                else:
+                    return jsonify({"error": "ids oder all erforderlich"}), 400
+                conn.commit()
+                return jsonify({"success": True, "confirmed": cur.rowcount})
+        except Exception as e:
+            logging.error(f"Fehler beim Bestätigen: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/auto-mapped/reject", methods=["POST"])
+    def reject_auto_mapped() -> Response:
+        """Reject a wrong auto-assignment: delete the saved rule (so it won't
+        repeat) and flag the invoice for manual correction. Pass {"id": <invoice_id>}."""
+        data = request.get_json(silent=True) or {}
+        invoice_id = data.get("id")
+        if not invoice_id:
+            return jsonify({"error": "id erforderlich"}), 400
+        db_path = Path(app.config["DATABASE"])
+        try:
+            with sqlite3.connect(db_path) as conn:
+                row = conn.execute(
+                    "SELECT mapped_from FROM invoices WHERE id = ?", (invoice_id,)
+                ).fetchone()
+                if not row:
+                    return jsonify({"error": "Rechnung nicht gefunden"}), 404
+                mapped_from = row[0]
+                # Remove the saved rule so this misassignment won't recur.
+                if mapped_from:
+                    conn.execute(
+                        "DELETE FROM import_mappings WHERE source_name = ?", (mapped_from,)
+                    )
+                # Clear the auto flag and mark for manual review.
+                conn.execute(
+                    "UPDATE invoices SET auto_mapped = 0, name_needs_review = 1 WHERE id = ?",
+                    (invoice_id,),
+                )
+                conn.commit()
+            return jsonify({"success": True})
+        except Exception as e:
+            logging.error(f"Fehler beim Ablehnen: {e}")
+            return jsonify({"error": str(e)}), 500
+
     @app.route("/api/import-folders", methods=["GET"])
     def get_import_folders() -> Response:
         """Get list of all import folders with their status."""
@@ -2034,6 +2137,8 @@ Der Inhalt dieser Nachricht ist vertraulich. Sollte diese Nachricht nicht für S
                     failed_count = 0
                     processed_groups = 0
                     root = get_data_dir()
+                    # Temp-Ordner fuer erzeugte Rezept-Anhaenge (schoene Dateinamen)
+                    rezept_tmp_dir = tempfile.mkdtemp(prefix="rezept_mail_")
 
                     # Process each group only if SMTP connection is established
                     if not smtp_connection_failed:
@@ -2082,6 +2187,28 @@ Der Inhalt dieser Nachricht ist vertraulich. Sollte diese Nachricht nicht für S
                                 yield f"data: {json.dumps({'type': 'progress', 'progress': progress, 'processed': processed_groups, 'total': total_groups})}\n\n"
                                 continue
 
+                            # Zugeordnete Privatrezepte des Kunden fuer den
+                            # aktuellen Abrechnungsmonat als EINZELNE, nummerierte
+                            # Anhaenge beilegen: "Rezepte_JJJJ_MM (N).pdf" -- OHNE
+                            # Namen des Versicherten. (KEIN 4-auf-1; das ist nur fuer den Brief.)
+                            # Separate Liste, damit die Rechnungszaehlung unveraendert bleibt.
+                            rezept_paths = []
+                            try:
+                                invoice_ids = [inv.id for inv in invoice_list]
+                                scan_pdfs = build_scan_pdfs_for_invoices(conn, invoice_ids)
+                                if scan_pdfs:
+                                    # Dateiname aus dem Abrechnungsmonat der Rezepte
+                                    rx_month = billing_month_for_invoices(conn, invoice_ids) or \
+                                        max((inv.invoice_date[:7] for inv in invoice_list if inv.invoice_date), default="")
+                                    base = prescription_basename(rx_month)  # z.B. Rezepte_2026_06
+                                    for idx, scan_bytes in enumerate(scan_pdfs, start=1):
+                                        rx_file = Path(rezept_tmp_dir) / f"{base} ({idx}).pdf"
+                                        rx_file.write_bytes(scan_bytes)
+                                        rezept_paths.append(rx_file)
+                                    yield f"data: {json.dumps({'type': 'status', 'message': f'{len(scan_pdfs)} Rezept(e) als Anhang beigefuegt'})}\n\n"
+                            except Exception as exc:
+                                logging.error(f"Error attaching prescriptions for {customer_name}: {exc}")
+
                             # Get other open invoices for this customer (not in current filter)
                             current_invoice_ids = {inv.id for inv in invoice_list}
                             other_open_cursor = conn.execute(
@@ -2127,13 +2254,14 @@ Der Inhalt dieser Nachricht ist vertraulich. Sollte diese Nachricht nicht für S
                             send_success = send_invoices_batch_email(
                                 customer_email,
                                 customer_name,
-                                pdf_paths,
+                                pdf_paths + rezept_paths,
                                 None,  # month_year - will be handled in the function
                                 customer_salutation,
                                 smtp_connection=ensure_smtp_connection(),
                                 smtp_config=smtp_config,
                                 invoice_list=invoice_list,  # Pass the invoice list for details
                                 other_open_invoices=other_open_invoices if other_open_invoices else None,
+                                prescription_count=len(rezept_paths),
                             )
 
                             if not send_success:
@@ -2156,13 +2284,14 @@ Der Inhalt dieser Nachricht ist vertraulich. Sollte diese Nachricht nicht für S
                                 send_success = send_invoices_batch_email(
                                     customer_email,
                                     customer_name,
-                                    pdf_paths,
+                                    pdf_paths + rezept_paths,
                                     None,  # month_year - will be handled in the function
                                     customer_salutation,
                                     smtp_connection=connection_for_retry,
                                     smtp_config=smtp_config,
                                     invoice_list=invoice_list,  # Pass the invoice list for details
                                     other_open_invoices=other_open_invoices if other_open_invoices else None,
+                                    prescription_count=len(rezept_paths),
                                 )
 
                             if send_success:
@@ -2710,13 +2839,27 @@ Der Inhalt dieser Nachricht ist vertraulich. Sollte diese Nachricht nicht für S
                             'amount': inv.amount_eur
                         })
 
+                    # Rezepte haengen direkt an der konkreten RECHNUNG (invoice_id),
+                    # nicht am Monat: die Rechnung enthaelt genau diese Artikel.
+                    # Sind an eine der enthaltenen Rechnungen Rezepte gebunden?
+                    # (dann Hinweis "Information fuer Privatversicherte" im Anschreiben)
+                    included_invoice_ids = [inv.id for inv in current_month_invoices]
+                    has_prescriptions = False
+                    if included_invoice_ids:
+                        ph = ",".join("?" * len(included_invoice_ids))
+                        has_prescriptions = conn.execute(
+                            f"SELECT 1 FROM rezept_page WHERE invoice_id IN ({ph}) LIMIT 1",
+                            included_invoice_ids,
+                        ).fetchone() is not None
+
                     # Create cover letter PDF
                     cover_letter_bytes = create_cover_letter_pdf(
                         customer_name=display_customer_name,
                         customer_address=customer_address,
                         current_month_invoices=current_month_list,
                         older_open_invoices=older_open_list,
-                        salutation=salutation
+                        salutation=salutation,
+                        include_prescription_notice=has_prescriptions
                     )
 
                     # Create PDF merger
@@ -2759,6 +2902,20 @@ Der Inhalt dieser Nachricht ist vertraulich. Sollte diese Nachricht nicht für S
                         email_consent_pdf = PdfReader(io.BytesIO(email_consent_bytes))
                         for page in email_consent_pdf.pages:
                             pdf_merger.add_page(page)
+
+                    # An die enthaltenen Rechnungen gebundene Rezepte anhaengen
+                    # (4-auf-1 auf A4).
+                    try:
+                        rx_count = append_prescriptions_for_invoices(
+                            conn, pdf_merger, included_invoice_ids
+                        )
+                        if rx_count:
+                            logging.info(
+                                "%d Rezept(e) an Sammelrechnung von %s angehaengt (Rechnungen %s)",
+                                rx_count, customer_name, included_invoice_ids,
+                            )
+                    except Exception as e:
+                        logging.error(f"Error appending prescriptions for {customer_name}: {e}")
 
                     # Save combined PDF
                     # Sanitize filename
@@ -3901,6 +4058,9 @@ Der Inhalt dieser Nachricht ist vertraulich. Sollte diese Nachricht nicht für S
         if not target.exists():
             abort(404)
         return send_from_directory(root, relative_path, mimetype="application/pdf")
+
+    # Rezepte-Routen (Privatrezepte importieren/splitten/drehen/zuordnen)
+    register_rezepte_routes(app)
 
     return app
 

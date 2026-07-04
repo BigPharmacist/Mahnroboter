@@ -347,6 +347,22 @@ def init_db(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass  # Column already exists
 
+    # auto_mapped: set when an import was auto-resolved via a saved import_mapping
+    # and is awaiting the user's one-time confirmation in the review list.
+    try:
+        conn.execute("ALTER TABLE invoices ADD COLUMN auto_mapped INTEGER DEFAULT 0")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
+    # mapped_from: the originally parsed name of an auto-mapped import (so the
+    # review list can show "<parsed> -> <assigned customer>").
+    try:
+        conn.execute("ALTER TABLE invoices ADD COLUMN mapped_from TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
     # Create sammelrechnungen_letterxpress table for tracking Letterxpress submissions
     conn.execute(
         """
@@ -443,6 +459,25 @@ def init_db(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
             resolved_at TEXT,
             FOREIGN KEY (snapshot_id) REFERENCES snapshots(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    # Create import_mappings table: remembers how a parsed (name/street/city) was
+    # resolved, so future identical imports are auto-assigned without re-asking.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS import_mappings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_name TEXT NOT NULL,
+            source_street TEXT NOT NULL DEFAULT '',
+            source_city TEXT NOT NULL DEFAULT '',
+            target_name TEXT NOT NULL,
+            target_street TEXT NOT NULL DEFAULT '',
+            target_city TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+            UNIQUE(source_name, source_street, source_city)
         )
         """
     )
@@ -1647,6 +1682,48 @@ def update_customer_data_for_all_invoices(
     return updated_count
 
 
+def save_import_mapping(
+    conn: sqlite3.Connection,
+    source_name: str, source_street: str, source_city: str,
+    target_name: str, target_street: str, target_city: str,
+) -> None:
+    """Remember that a parsed (source) address resolves to a given (target) customer,
+    so future identical imports are auto-assigned without asking again."""
+    conn.execute(
+        """
+        INSERT INTO import_mappings
+            (source_name, source_street, source_city, target_name, target_street, target_city)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source_name, source_street, source_city) DO UPDATE SET
+            target_name = excluded.target_name,
+            target_street = excluded.target_street,
+            target_city = excluded.target_city,
+            updated_at = datetime('now', 'localtime')
+        """,
+        (
+            (source_name or "").strip(), (source_street or "").strip(), (source_city or "").strip(),
+            (target_name or "").strip(), (target_street or "").strip(), (target_city or "").strip(),
+        ),
+    )
+
+
+def find_import_mapping(
+    conn: sqlite3.Connection, name: str, street: str, city: str
+) -> Optional[dict]:
+    """Look up a saved mapping for a parsed address. Returns target dict or None."""
+    row = conn.execute(
+        """
+        SELECT target_name, target_street, target_city
+        FROM import_mappings
+        WHERE source_name = ? AND source_street = ? AND source_city = ?
+        """,
+        ((name or "").strip(), (street or "").strip(), (city or "").strip()),
+    ).fetchone()
+    if not row:
+        return None
+    return {"customer_name": row[0], "customer_street": row[1], "customer_city": row[2]}
+
+
 def resolve_pending_import(
     conn: sqlite3.Connection,
     pending_import_id: int,
@@ -1715,6 +1792,8 @@ def resolve_pending_import(
                 "resolved_from_pending": True
             }
         )
+
+        target_name, target_street, target_city = customer_name, customer_street, customer_city
 
         logging.info(
             "Pending import resolved - Neuer Kunde erstellt: %s",
@@ -1786,6 +1865,8 @@ def resolve_pending_import(
             }
         )
 
+        target_name, target_street, target_city = final_name, final_street, final_city
+
         logging.info(
             "Pending import resolved - Zusammengeführt: '%s' -> '%s' (Neue Daten: %s)",
             customer_name,
@@ -1796,6 +1877,13 @@ def resolve_pending_import(
     else:
         logging.error("Unbekannte Aktion: %s", action)
         return False
+
+    # Remember this decision so future identical imports are auto-assigned.
+    save_import_mapping(
+        conn,
+        customer_name, customer_street, customer_city,
+        target_name, target_street, target_city,
+    )
 
     # Mark pending import as resolved
     conn.execute(
@@ -1983,6 +2071,24 @@ def process_pdf_file(conn: sqlite3.Connection, pdf_path: Path, root: Path) -> bo
     # Get or create snapshot
     snapshot_id = get_or_create_snapshot(conn, snapshot_date, folder_name)
 
+    # Auto-apply a remembered mapping: if the user has resolved this exact parsed
+    # address before, assign it directly (no similar-customer prompt) and flag it
+    # for a one-time confirmation in the review list.
+    mapping = find_import_mapping(
+        conn, record.customer_name, record.customer_street, record.customer_city
+    )
+    auto_mapped_from = None
+    if mapping and mapping["customer_name"]:
+        auto_mapped_from = record.customer_name
+        record.customer_name = mapping["customer_name"]
+        record.customer_street = mapping["customer_street"] or record.customer_street
+        record.customer_city = mapping["customer_city"] or record.customer_city
+        record.customer_address = f"{record.customer_street}, {record.customer_city}"
+        logging.info(
+            "Auto-Zuordnung via gespeicherter Regel: '%s' -> '%s'",
+            auto_mapped_from, record.customer_name,
+        )
+
     # Check if this customer_name was previously corrected (has custom_name set)
     # If so, we know this "bad" name belongs to an existing customer and skip fuzzy matching
     name_was_corrected = conn.execute(
@@ -2009,9 +2115,10 @@ def process_pdf_file(conn: sqlite3.Connection, pdf_path: Path, root: Path) -> bo
         (record.customer_name, record.customer_street, record.customer_city)
     ).fetchone()[0]
 
-    # Only do expensive fuzzy matching if no exact match exists AND name wasn't corrected before
+    # Only do expensive fuzzy matching if no exact match exists, the name wasn't
+    # corrected before, AND no saved mapping already auto-assigned this import.
     similar_customers = []
-    if exact_match == 0 and not name_was_corrected:
+    if exact_match == 0 and not name_was_corrected and not mapping:
         # Check for similar customers BEFORE creating invoice
         similar_customers = find_similar_customers(
             conn,
@@ -2072,6 +2179,17 @@ def process_pdf_file(conn: sqlite3.Connection, pdf_path: Path, root: Path) -> bo
 
     # Link invoice to snapshot
     is_new_link = link_invoice_to_snapshot(conn, invoice_id, snapshot_id, key)
+
+    # Flag auto-mapped imports for the one-time confirmation review list.
+    if auto_mapped_from and is_new_link:
+        conn.execute(
+            "UPDATE invoices SET auto_mapped = 1, mapped_from = ? WHERE id = ?",
+            (auto_mapped_from, invoice_id),
+        )
+        log_invoice_event(
+            conn, invoice_id, "AUTO_MAPPED",
+            {"from": auto_mapped_from, "to": record.customer_name},
+        )
 
     # Check if customer has salutation in customer_details
     customer_check = conn.execute(
