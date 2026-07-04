@@ -397,6 +397,20 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
 
+    # Einschreiben-Tracking-Spalten (Migration für bestehende DBs)
+    for col_def in (
+        "registered TEXT",           # r1/r2 (Einschreiben) oder NULL
+        "dispatch_date TEXT",        # Versanddatum laut LetterXpress
+        "tracking_code TEXT",        # Deutsche-Post-Sendungsnummer
+        "tracking_status TEXT",      # Klartext-Zustellstatus
+        "item_status TEXT",          # Status des Einzel-Items (sent/...)
+        "last_tracking_check TEXT",  # Zeitpunkt der letzten API-Abfrage
+    ):
+        try:
+            conn.execute(f"ALTER TABLE mahnungen_letterxpress ADD COLUMN {col_def}")
+        except sqlite3.OperationalError:
+            pass  # Spalte existiert bereits
+
     # Create collective_invoice_items table to track which invoices are in which collective invoices
     conn.execute(
         """

@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>{{ view_title }} – Liste</title>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      font-family: -apple-system, "Segoe UI", Arial, sans-serif;
+      color: #1a1a1a;
+      margin: 24px;
+      font-size: 12px;
+    }
+    .list-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      border-bottom: 2px solid #333;
+      padding-bottom: 8px;
+      margin-bottom: 16px;
+    }
+    .list-header h1 { font-size: 18px; margin: 0 0 4px; }
+    .list-header .meta { font-size: 11px; color: #555; }
+    .list-header .summary { text-align: right; font-size: 12px; }
+    .list-header .summary strong { font-size: 15px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td {
+      border: 1px solid #bbb;
+      padding: 4px 6px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: #f0f0f0; font-size: 11px; }
+    td.num, th.num { text-align: right; white-space: nowrap; }
+    td.center, th.center { text-align: center; }
+    tbody tr:nth-child(even) { background: #f8f8f8; }
+    tfoot td { font-weight: bold; border-top: 2px solid #333; }
+    .print-bar {
+      margin-bottom: 16px;
+    }
+    .print-bar button {
+      font-size: 13px;
+      padding: 6px 14px;
+      cursor: pointer;
+    }
+    @media print {
+      body { margin: 0; }
+      .print-bar { display: none; }
+      thead { display: table-header-group; }
+      tr { page-break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <div class="print-bar">
+    <button onclick="window.print()">🖨️ Drucken</button>
+  </div>
+
+  <div class="list-header">
+    <div>
+      <h1>{{ view_title }}</h1>
+      <div class="meta">Erstellt am {{ generated_at }}</div>
+    </div>
+    <div class="summary">
+      <div>{{ total_count }} Eintrag{{ 'e' if total_count != 1 else '' }}</div>
+      <strong>{{ "%.2f"|format(total_amount) }} €</strong>
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th class="num">#</th>
+        <th>Kunde</th>
+        <th>Adresse</th>
+        <th>Rechnungs-Nr.</th>
+        <th>Rechnungsdatum</th>
+        <th class="num">Betrag</th>
+        <th class="center">Monate offen</th>
+        {% if view == 'unbemahnt' %}
+        <th>Empfehlung</th>
+        {% else %}
+        <th>Letzte Mahnung</th>
+        {% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% set levels = {0: 'Zahlungserinnerung', 1: '1. Mahnung', 2: '2. Mahnung'} %}
+      {% for invoice in invoices %}
+      <tr>
+        <td class="num">{{ loop.index }}</td>
+        <td>{{ invoice.customer_name }}</td>
+        <td>{{ invoice.customer_address }}</td>
+        <td>{{ invoice.invoice_number or '–' }}</td>
+        <td>{{ invoice.invoice_date|german_date }}</td>
+        <td class="num">{{ "%.2f"|format(invoice.amount_eur) }} €</td>
+        <td class="center">{{ invoice.months_open }}</td>
+        {% if view == 'unbemahnt' %}
+        <td>{{ levels.get(invoice.recommended_level, '–') }}</td>
+        {% else %}
+        <td>{{ invoice.last_reminder_date|german_date if invoice.last_reminder_date else '–' }}</td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="5" style="text-align:right;">Summe</td>
+        <td class="num">{{ "%.2f"|format(total_amount) }} €</td>
+        <td colspan="2"></td>
+      </tr>
+    </tfoot>
+  </table>
+
+  <script>
+    // Druckdialog automatisch öffnen, sobald die Seite geladen ist.
+    window.addEventListener('load', function () {
+      setTimeout(function () { window.print(); }, 200);
+    });
+  </script>
+</body>
+</html>

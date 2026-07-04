@@ -134,3 +134,36 @@ def load_imap_config() -> IMAPConfig:
         user=os.getenv('IMAP_USER', 'info@apothekeamdamm.de'),
         password=os.getenv('IMAP_PASSWORD', ''),
     )
+
+
+@dataclass
+class InkassoConfig:
+    """Settings for exporting/sending dunning cases to the collection agency."""
+    smtp: SMTPConfig
+    recipient: str          # E-Mail des Inkassobüros (Empfänger)
+    membership_number: str  # Mitgliedsnummer beim Inkassobüro (Spalte A)
+    creditor_name: str      # Gläubiger (Apotheke)
+    creditor_address: str   # Gläubiger-Adresse
+    contact_name: str       # Ansprechpartner (E-Mail-Signatur)
+    contact_phone: str      # Telefon (E-Mail-Signatur)
+
+
+def load_inkasso_config() -> InkassoConfig:
+    """Read Inkasso settings from the environment (separate mailbox from invoices)."""
+    smtp = SMTPConfig(
+        server=os.getenv('INKASSO_SMTP_SERVER', os.getenv('SMTP_SERVER', 'mail.kaeee.de')),
+        port=int(os.getenv('INKASSO_SMTP_PORT', '587')),
+        user=os.getenv('INKASSO_SMTP_USER', 'inkasso@apothekeamdamm.de'),
+        password=os.getenv('INKASSO_SMTP_PASSWORD', ''),
+        use_tls=os.getenv('INKASSO_SMTP_USE_TLS', 'True').lower() == 'true',
+        from_name=os.getenv('INKASSO_SMTP_FROM_NAME', 'Apotheke am Damm'),
+    )
+    return InkassoConfig(
+        smtp=smtp,
+        recipient=os.getenv('INKASSO_RECIPIENT', 'inkasso@apothekeamdamm.de'),
+        membership_number=os.getenv('INKASSO_MEMBERSHIP_NUMBER', '627-3220'),
+        creditor_name=os.getenv('INKASSO_CREDITOR_NAME', 'Apotheke am Damm'),
+        creditor_address=os.getenv('INKASSO_CREDITOR_ADDRESS', 'Am Damm 17, 55232 Alzey'),
+        contact_name=os.getenv('INKASSO_CONTACT_NAME', ''),
+        contact_phone=os.getenv('INKASSO_CONTACT_PHONE', ''),
+    )

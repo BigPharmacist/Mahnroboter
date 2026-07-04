@@ -2,6 +2,22 @@
 
 {% block title %}Mahnungen{% endblock %}
 
+{% macro tracking_badge(lx) %}
+  {% if lx and lx.registered %}
+    {% if lx.delivered %}
+      <div class="lx-tracking lx-delivered" title="{{ lx.tracking_code }}">📬 {{ lx.tracking_status }}</div>
+    {% elif lx.tracking_code %}
+      <div class="lx-tracking">✉️ Einschreiben unterwegs:
+        <a href="https://www.deutschepost.de/de/s/sendungsverfolgung.html?piececode={{ lx.tracking_code }}"
+           target="_blank" onclick="event.stopPropagation()">{{ lx.tracking_code }}</a>
+        {% if lx.tracking_status and lx.tracking_status != '--' %}<br><small>{{ lx.tracking_status }}</small>{% endif %}
+      </div>
+    {% else %}
+      <div class="lx-tracking lx-pending">✉️ Einschreiben – Sendungsnr. folgt{% if lx.dispatch_date %} (Versand {{ lx.dispatch_date }}){% endif %}</div>
+    {% endif %}
+  {% endif %}
+{% endmacro %}
+
 {% block content %}
 <header>
   <h1>Mahnungen</h1>
@@ -105,6 +121,12 @@
     <button class="btn btn-secondary btn-sm" onclick="toggleAllGroups()" id="toggleAllBtn">
       Alle einklappen
     </button>
+    {% if stats.total_count > 0 %}
+    <a href="{{ url_for('mahnungen_liste', view=view, show_uncollectible=show_uncollectible, hide_never_remind=hide_never_remind, only_actionable=only_actionable) }}"
+       target="_blank" class="btn btn-secondary btn-sm" style="margin-left: 1rem;">
+      🖨️ Liste drucken
+    </a>
+    {% endif %}
     {% if view == 'unbemahnt' and stats.count_by_level.get(0, 0) > 0 %}
     <button class="btn btn-primary btn-sm" onclick="createAllRecommendedReminders()" style="margin-left: 1rem;">
       Alle Zahlungserinnerungen erstellen ({{ stats.count_by_level.get(0, 0) }})
@@ -129,6 +151,15 @@
     {% if view == '2_mahnung' and stats.total_count > 0 %}
     <button class="btn btn-primary btn-sm" onclick="showLetterXpressDialog()" id="sendBtn" style="margin-left: 1rem;" disabled>
       📮 Per LetterXpress versenden
+    </button>
+    <button class="btn btn-secondary btn-sm" onclick="exportInkasso()" id="inkassoExportBtn" style="margin-left: 1rem;">
+      📊 Inkasso-Excel erzeugen
+    </button>
+    <button class="btn btn-primary btn-sm" onclick="sendInkasso()" id="inkassoSendBtn" style="margin-left: 0.5rem;">
+      📧 An Inkasso versenden
+    </button>
+    <button class="btn btn-secondary btn-sm" onclick="refreshTracking()" id="trackingBtn" style="margin-left: 1rem;">
+      🔄 Einschreiben-Status aktualisieren
     </button>
     {% endif %}
   </div>
@@ -273,6 +304,7 @@
                         ✅ #{{ letterxpress_status[group.reminder_pdf_path].job_id }}
                       </span>
                       <small class="lx-date">{{ letterxpress_status[group.reminder_pdf_path].submitted_at }}</small>
+                      {{ tracking_badge(letterxpress_status[group.reminder_pdf_path]) }}
                     </div>
                   {% else %}
                     {{ first_inv.last_reminder_date|german_date if first_inv.last_reminder_date else '—' }}
@@ -408,6 +440,7 @@
                         ✅ #{{ letterxpress_status[invoice.reminder_pdf_path].job_id }}
                       </span>
                       <small class="lx-date">{{ letterxpress_status[invoice.reminder_pdf_path].submitted_at }}</small>
+                      {{ tracking_badge(letterxpress_status[invoice.reminder_pdf_path]) }}
                     </div>
                   {% else %}
                     {{ invoice.last_reminder_date|german_date if invoice.last_reminder_date else '—' }}
@@ -920,6 +953,82 @@ function showProgressModal(message) {
 function hideProgressModal() {
   const modal = document.getElementById('progressModal');
   modal.style.display = 'none';
+}
+
+// ===== Inkasso-Export / -Versand =====
+async function exportInkasso() {
+  const btn = document.getElementById('inkassoExportBtn');
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Erzeuge Excel...';
+  try {
+    const res = await fetch('/api/inkasso/export', { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      alert(`✅ Inkasso-Excel erstellt:\n\n${data.filename}\n\n${data.count} Fall/Fälle\nOrdner: ${data.folder}`);
+    } else {
+      alert('❌ ' + (data.error || 'Fehler beim Erzeugen der Datei.'));
+    }
+  } catch (e) {
+    alert('❌ Netzwerkfehler: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
+async function sendInkasso() {
+  if (!confirm('Die aktuellen abgeschlossenen 2.-Mahnung-Fälle als Excel erzeugen und per E-Mail an das Inkassobüro senden?')) {
+    return;
+  }
+  const btn = document.getElementById('inkassoSendBtn');
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Wird versendet...';
+  try {
+    const res = await fetch('/api/inkasso/send', { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      let msg = `✅ An Inkasso versendet an:\n${data.recipient}\n\nDatei: ${data.filename}\n${data.count} Fall/Fälle`;
+      if (data.belege) {
+        msg += `\n\nBelege beigefügt: ${data.belege.rechnungen} Rechnung(en), ${data.belege.mahnungen} Mahnung(en)`;
+        if (data.belege.fehlend > 0) msg += `\n⚠️ ${data.belege.fehlend} PDF(s) nicht gefunden`;
+      }
+      alert(msg);
+    } else {
+      alert('❌ ' + (data.error || 'Fehler beim Versand.'));
+    }
+  } catch (e) {
+    alert('❌ Netzwerkfehler: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
+async function refreshTracking() {
+  const btn = document.getElementById('trackingBtn');
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Frage LetterXpress ab...';
+  try {
+    const res = await fetch('/api/letterxpress/refresh-tracking', { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      let msg = `✅ Status aktualisiert.\n\nGeprüft: ${data.checked} Sendungen\nEinschreiben: ${data.registered}\nDavon zugestellt: ${data.delivered}`;
+      if (data.not_found > 0) msg += `\nNicht mehr bei LetterXpress (zu alt): ${data.not_found}`;
+      if (data.errors > 0) msg += `\n⚠️ Fehler: ${data.errors}`;
+      alert(msg);
+      location.reload();
+    } else {
+      alert('❌ ' + (data.error || 'Fehler bei der Statusabfrage.'));
+    }
+  } catch (e) {
+    alert('❌ Netzwerkfehler: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
 }
 
 // LetterXpress functions
@@ -1829,6 +1938,27 @@ const showUncollectibleInvoices = {{ 'true' if show_uncollectible else 'false' }
   flex-direction: column;
   gap: 0.25rem;
 }
+
+.lx-tracking {
+  font-size: 0.8rem;
+  color: #664d03;
+  background: #fff3cd;
+  border-radius: 4px;
+  padding: 2px 6px;
+  margin-top: 2px;
+}
+
+.lx-tracking.lx-delivered {
+  color: #0f5132;
+  background: #d1e7dd;
+}
+
+.lx-tracking.lx-pending {
+  color: #6c757d;
+  background: #f1f1f1;
+}
+
+.lx-tracking a { color: inherit; text-decoration: underline; }
 
 .lx-job-id {
   font-weight: 600;

@@ -104,6 +104,7 @@ from config import (
     load_smtp_config,
     IMAPConfig,
     load_imap_config,
+    load_inkasso_config,
 )
 
 
@@ -113,6 +114,14 @@ from mailer import (
     create_pdf_attachment,
     send_invoice_email,
     send_invoices_batch_email,
+)
+
+
+from inkasso_export import (
+    fetch_inkasso_cases,
+    build_inkasso_excel,
+    build_belege_zip,
+    send_inkasso_email,
 )
 
 
@@ -482,7 +491,9 @@ def create_app(config: Optional[dict] = None) -> Flask:
             with sqlite3.connect(app.config["DATABASE"]) as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
-                    "SELECT pdf_path, letterxpress_job_id, mode, submitted_at FROM mahnungen_letterxpress"
+                    """SELECT pdf_path, letterxpress_job_id, mode, submitted_at,
+                              registered, dispatch_date, tracking_code, tracking_status
+                         FROM mahnungen_letterxpress"""
                 ).fetchall()
                 for row in rows:
                     # Format timestamp for display
@@ -493,10 +504,16 @@ def create_app(config: Optional[dict] = None) -> Flask:
                     except:
                         formatted_date = submitted_at
 
+                    tstatus = row["tracking_status"]
                     letterxpress_status[row["pdf_path"]] = {
                         "job_id": row["letterxpress_job_id"],
                         "mode": row["mode"],
-                        "submitted_at": formatted_date
+                        "submitted_at": formatted_date,
+                        "registered": row["registered"],
+                        "dispatch_date": row["dispatch_date"],
+                        "tracking_code": row["tracking_code"],
+                        "tracking_status": tstatus,
+                        "delivered": bool(tstatus and str(tstatus).startswith("Zugestellt")),
                     }
         except Exception as e:
             logging.error(f"Failed to fetch LetterXpress status for mahnungen: {e}")
@@ -620,6 +637,170 @@ def create_app(config: Optional[dict] = None) -> Flask:
             only_actionable=only_actionable,
             letterxpress_status=letterxpress_status
         )
+
+    @app.route("/mahnungen/liste")
+    def mahnungen_liste() -> Response:
+        """Druckbare Liste einer Mahnstufe (eine Zeile pro Rechnung)."""
+        view = request.args.get("view", "unbemahnt")
+        show_uncollectible = request.args.get("show_uncollectible", "false").lower() == "true"
+        hide_never_remind = request.args.get("hide_never_remind", "true").lower() == "true"
+        only_actionable = request.args.get("only_actionable", "true").lower() == "true"
+
+        # Gleiche Auswahl-Logik wie in der Übersicht (mahnungen), damit die Liste
+        # exakt den angezeigten Einträgen des jeweiligen Tabs entspricht.
+        if view == "unbemahnt":
+            all_unbemahnt = fetch_invoices_with_reminders(
+                app.config["DATABASE"], filter_reminded=False, hide_never_remind=hide_never_remind
+            )
+            if only_actionable:
+                invoices = [inv for inv in all_unbemahnt if inv.recommended_level is not None]
+            else:
+                invoices = all_unbemahnt
+        else:
+            all_reminded = fetch_invoices_with_reminders(
+                app.config["DATABASE"], filter_reminded=True, hide_never_remind=hide_never_remind
+            )
+            if view == "zahlungserinnerung":
+                invoices = [inv for inv in all_reminded if inv.last_reminder_level == 0]
+            elif view == "1_mahnung":
+                invoices = [inv for inv in all_reminded if inv.last_reminder_level == 1]
+            elif view == "2_mahnung":
+                invoices = [inv for inv in all_reminded if inv.last_reminder_level == 2]
+                if not show_uncollectible:
+                    invoices = [inv for inv in invoices if not inv.uncollectible]
+            else:
+                invoices = []
+
+        # Sortierung: nach Kundenname, dann Rechnungsdatum (wie in der Übersicht)
+        invoices = sorted(invoices, key=lambda x: (x.customer_name.lower(), x.invoice_date))
+
+        view_titles = {
+            "unbemahnt": "Unbemahnt (empfohlene Zahlungserinnerungen)",
+            "zahlungserinnerung": "Zahlungserinnerung",
+            "1_mahnung": "1. Mahnung",
+            "2_mahnung": "2. Mahnung",
+        }
+
+        return render_template(
+            "mahnungen_liste.html",
+            invoices=invoices,
+            view=view,
+            view_title=view_titles.get(view, "Mahnungen"),
+            total_count=len(invoices),
+            total_amount=sum(inv.amount_eur for inv in invoices),
+            generated_at=datetime.now().strftime("%d.%m.%Y %H:%M"),
+        )
+
+    def _generate_inkasso_excel():
+        """Erzeugt eine frische Inkasso-Excel und gibt (path, cases, cfg) zurück.
+        Wirft ValueError, wenn keine Fälle vorhanden sind."""
+        cfg = load_inkasso_config()
+        cases = fetch_inkasso_cases(app.config["DATABASE"])
+        if not cases:
+            raise ValueError("Keine abgeschlossenen 2.-Mahnung-Fälle vorhanden.")
+        out_dir = get_data_dir() / "Inkasso"
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        out_path = out_dir / f"Inkasso_2.Mahnung_{timestamp}.xlsx"
+        build_inkasso_excel(cases, BASE_DIR / "Musterdatei1.xlsx", out_path, cfg.membership_number)
+        return out_path, cases, cfg
+
+    @app.route("/api/inkasso/export", methods=["POST"])
+    def inkasso_export():
+        """Erzeugt eine neue Inkasso-Excel im Datenordner (ohne Versand)."""
+        try:
+            out_path, cases, _ = _generate_inkasso_excel()
+            return jsonify({
+                "success": True,
+                "count": len(cases),
+                "filename": out_path.name,
+                "folder": str(out_path.parent),
+            })
+        except ValueError as e:
+            return jsonify({"success": False, "error": str(e)}), 400
+        except Exception as e:
+            logging.exception("Inkasso-Export fehlgeschlagen")
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/api/inkasso/send", methods=["POST"])
+    def inkasso_send():
+        """Erzeugt eine frische Inkasso-Excel + Belege-ZIP und versendet beides ans Inkassobüro."""
+        try:
+            out_path, cases, cfg = _generate_inkasso_excel()
+            # Belege (Rechnungen + 2. Mahnungen) als ZIP bündeln
+            zip_path = out_path.with_name(out_path.stem.replace("Inkasso_", "Belege_") + ".zip")
+            belege = build_belege_zip(cases, get_data_dir(), zip_path)
+            extra = [belege["zip"]] if belege["zip"] else []
+            send_inkasso_email(cfg, out_path, len(cases), extra_attachments=extra)
+            return jsonify({
+                "success": True,
+                "count": len(cases),
+                "filename": out_path.name,
+                "recipient": cfg.recipient,
+                "belege": {
+                    "zip": belege["zip"].name if belege["zip"] else None,
+                    "rechnungen": belege["rechnungen"],
+                    "mahnungen": belege["mahnungen"],
+                    "fehlend": len(belege["fehlend"]),
+                },
+            })
+        except ValueError as e:
+            return jsonify({"success": False, "error": str(e)}), 400
+        except Exception as e:
+            logging.exception("Inkasso-Versand fehlgeschlagen")
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/api/letterxpress/refresh-tracking", methods=["POST"])
+    def refresh_letterxpress_tracking():
+        """Fragt für jüngere Mahnungs-Jobs den LetterXpress-Status ab und speichert
+        Einschreiben-Tracking (Sendungsnummer + Zustellstatus)."""
+        try:
+            cutoff = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d %H:%M:%S")
+            lx = LetterXpressClient()
+            checked = registered = delivered = errors = not_found = 0
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with sqlite3.connect(app.config["DATABASE"]) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """SELECT id, letterxpress_job_id
+                         FROM mahnungen_letterxpress
+                        WHERE submitted_at >= ?
+                          AND (tracking_status IS NULL OR tracking_status NOT LIKE 'Zugestellt%')
+                        ORDER BY submitted_at DESC""",
+                    (cutoff,),
+                ).fetchall()
+                for r in rows:
+                    checked += 1
+                    try:
+                        job = lx.get_job(int(r["letterxpress_job_id"]))
+                    except Exception as e:
+                        if "404" in str(e):
+                            not_found += 1
+                        else:
+                            errors += 1
+                        continue
+                    item = (job.get("items") or [{}])[0]
+                    reg = job.get("registered")
+                    tstatus = item.get("tracking_status")
+                    conn.execute(
+                        """UPDATE mahnungen_letterxpress
+                              SET registered=?, dispatch_date=?, tracking_code=?,
+                                  tracking_status=?, item_status=?, last_tracking_check=?
+                            WHERE id=?""",
+                        (reg, job.get("dispatch_date"), item.get("tracking_code"),
+                         tstatus, item.get("status"), now_str, r["id"]),
+                    )
+                    if reg:
+                        registered += 1
+                        if tstatus and str(tstatus).startswith("Zugestellt"):
+                            delivered += 1
+                conn.commit()
+            return jsonify({
+                "success": True, "checked": checked, "registered": registered,
+                "delivered": delivered, "not_found": not_found, "errors": errors,
+            })
+        except Exception as e:
+            logging.exception("Tracking-Refresh fehlgeschlagen")
+            return jsonify({"success": False, "error": str(e)}), 500
 
     @app.route("/vorlagen")
     def vorlagen() -> Response:
