@@ -7,6 +7,9 @@ pdfplumber>=0.11.0,<1
 reportlab>=4.0.0,<5
 Pillow>=10.0.0,<12.0.0
 
+# Excel export (Inkasso)
+openpyxl>=3.1.0,<4
+
 # File monitoring
 watchdog>=6.0.0,<7
 
